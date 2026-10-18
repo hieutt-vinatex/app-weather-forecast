@@ -4,12 +4,17 @@
 services:
   backend:
     build: .
+    env_file:
+      - .env
     environment:
       APP_ENV: production
       CORS_ORIGINS: "http://localhost:8080"
       REALTIME_ENABLED: "true"
+      NOTIFICATION_STATE_PATH: "/app/data/notification-state.json"
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
 
   frontend:

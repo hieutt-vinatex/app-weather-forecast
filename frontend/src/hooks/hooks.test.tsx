@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useGdbRealtime } from "./useGdbRealtime";
 import { useGdbSnapshot } from "./useGdbSnapshot";
 import { useManualRefresh } from "./useManualRefresh";
+import { useSendAbsenceNotification } from "./useSendAbsenceNotification";
 import { snapshotQueryKey } from "../api/client";
 import { MockEventSource, installMockEventSource } from "../test/mockEventSource";
 import { makeSnapshot } from "../test/fixtures";
@@ -139,5 +140,61 @@ describe("useManualRefresh", () => {
     });
     expect(result.current.isError).toBe(false);
     expect(result.current.message).toContain("Đã cập nhật");
+  });
+});
+
+describe("useSendAbsenceNotification", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("sends the admin token and reports a successful immediate delivery", async () => {
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: "delivered",
+        success: true,
+        dryRun: false,
+        message: "Đã gửi 3 số đang vắng 19–25 ngày.",
+        checkedAt: "2026-10-15T22:30:00+07:00",
+        referenceDate: "2026-10-15",
+        minDays: 19,
+        maxDays: 25,
+        candidateCount: 3,
+        candidates: [],
+        reason: null,
+        results: [],
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchFn as unknown as typeof fetch);
+    const { result } = renderHook(() => useSendAbsenceNotification());
+
+    await act(async () => {
+      await result.current.send("  admin-secret  ");
+    });
+
+    expect(fetchFn).toHaveBeenCalledWith(
+      expect.stringContaining("/api/notifications/send-now"),
+      expect.objectContaining({
+        method: "POST",
+        headers: { "X-Notification-Token": "admin-secret" },
+      }),
+    );
+    expect(result.current.isError).toBe(false);
+    expect(result.current.message).toContain("Đã gửi 3 số");
+  });
+
+  it("explains an invalid admin token", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 401 })) as unknown as typeof fetch,
+    );
+    const { result } = renderHook(() => useSendAbsenceNotification());
+
+    await act(async () => {
+      await result.current.send("wrong-token");
+    });
+
+    expect(result.current.isError).toBe(true);
+    expect(result.current.message).toContain("không đúng");
   });
 });

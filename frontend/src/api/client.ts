@@ -1,5 +1,9 @@
 import { config, type RangeDays } from "../config";
-import type { RefreshResponse, SnapshotResponse } from "../types/gdb";
+import type {
+  RefreshResponse,
+  SendNotificationNowResponse,
+  SnapshotResponse,
+} from "../types/gdb";
 
 export class ApiError extends Error {
   constructor(
@@ -76,6 +80,27 @@ export async function triggerRefresh(): Promise<RefreshResponse> {
     throw new ApiError("Làm mới thất bại", res.status);
   }
   return (await res.json()) as RefreshResponse;
+}
+
+export async function sendAbsenceNotificationNow(
+  adminToken: string,
+): Promise<SendNotificationNowResponse> {
+  const res = await fetch(`${config.apiBaseUrl}/api/notifications/send-now`, {
+    method: "POST",
+    headers: {
+      "X-Notification-Token": adminToken,
+    },
+  });
+  if (res.status === 401) {
+    throw new ApiError("Khóa quản trị không hợp lệ", 401);
+  }
+  if (res.status === 404) {
+    throw new ApiError("API gửi thông báo chưa được bật", 404);
+  }
+  if (!res.ok) {
+    throw new ApiError("Gửi thông báo thất bại", res.status);
+  }
+  return (await res.json()) as SendNotificationNowResponse;
 }
 
 export function snapshotQueryKey(days: RangeDays): readonly ["gdb", RangeDays] {

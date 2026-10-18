@@ -19,8 +19,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.gdb_router import router as gdb_router
+from app.api.notification_router import router as notification_router
 from app.api.realtime_router import router as realtime_router
 from app.config import get_settings
+from app.notifications import NotificationService
 from app.realtime.broker import EventBroker
 from app.services.gdb_service import GdbService
 from app.services.realtime_service import RealtimeService
@@ -51,14 +53,17 @@ async def lifespan(app: FastAPI):
     gdb_service = GdbService(settings, fetcher)
     broker = EventBroker()
     realtime = RealtimeService(settings, gdb_service, broker)
+    notifications = NotificationService(settings, realtime)
 
     app.state.settings = settings
     app.state.fetcher = fetcher
     app.state.gdb_service = gdb_service
     app.state.broker = broker
     app.state.realtime = realtime
+    app.state.notifications = notifications
 
     await realtime.start()
+    await notifications.start()
     # Warm history in the background so startup is not blocked by 90 fetches.
     import asyncio
 
@@ -75,6 +80,7 @@ async def lifespan(app: FastAPI):
             await warm_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
+        await notifications.stop()
         await realtime.stop()
         await fetcher.close()
         logger.info("Application shutdown complete")
@@ -101,6 +107,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(gdb_router)
     app.include_router(realtime_router)
+    app.include_router(notification_router)
     return app
 
 

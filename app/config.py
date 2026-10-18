@@ -12,7 +12,7 @@ from functools import lru_cache
 from typing import List
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,6 +61,35 @@ class Settings(BaseSettings):
 
     manual_refresh_cooldown_seconds: float = 5.0
 
+    # Server-side absence notifications. Delivery credentials remain on the
+    # backend and are never exposed through the API/frontend.
+    notifications_enabled: bool = False
+    notification_dry_run: bool = True
+    notification_min_days: int = 19
+    notification_max_days: int = 25
+    notification_send_time: str = "09:00"
+    notification_check_interval_seconds: float = 60.0
+    notification_retry_interval_seconds: float = 300.0
+    notification_request_timeout_seconds: float = 10.0
+    notification_max_retries: int = 2
+    notification_state_path: str = ".data/notification-state.json"
+    notification_admin_token: SecretStr | None = None
+
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_ids: str = ""
+
+    zalo_access_token: SecretStr | None = None
+    zalo_refresh_token: SecretStr | None = None
+    zalo_app_id: str = ""
+    zalo_app_secret: SecretStr | None = None
+    zalo_recipient_ids: str = ""
+
+    facebook_graph_api_version: str = "v26.0"
+    facebook_page_access_token: SecretStr | None = None
+    facebook_messenger_recipient_ids: str = ""
+    facebook_page_id: str = ""
+    facebook_publish_to_page: bool = False
+
     # ------------------------------------------------------------------ #
     # Validators
     # ------------------------------------------------------------------ #
@@ -73,7 +102,11 @@ class Settings(BaseSettings):
             raise ValueError(f"Invalid timezone {value!r}: {exc}") from exc
         return value
 
-    @field_validator("realtime_active_start", "realtime_active_end")
+    @field_validator(
+        "realtime_active_start",
+        "realtime_active_end",
+        "notification_send_time",
+    )
     @classmethod
     def _validate_hhmm(cls, value: str) -> str:
         _parse_hhmm(value)  # raises on bad format
@@ -102,6 +135,22 @@ class Settings(BaseSettings):
             raise ValueError("SOURCE_MAX_RETRIES must be >= 0")
         if self.source_max_concurrency < 1:
             raise ValueError("SOURCE_MAX_CONCURRENCY must be >= 1")
+        if self.notification_min_days < 1:
+            raise ValueError("NOTIFICATION_MIN_DAYS must be >= 1")
+        if self.notification_max_days < self.notification_min_days:
+            raise ValueError(
+                "NOTIFICATION_MAX_DAYS must be >= NOTIFICATION_MIN_DAYS"
+            )
+        if self.notification_max_days > 88:
+            raise ValueError("NOTIFICATION_MAX_DAYS must be <= 88")
+        if self.notification_check_interval_seconds < 5:
+            raise ValueError("NOTIFICATION_CHECK_INTERVAL_SECONDS must be >= 5")
+        if self.notification_retry_interval_seconds < 5:
+            raise ValueError("NOTIFICATION_RETRY_INTERVAL_SECONDS must be >= 5")
+        if self.notification_request_timeout_seconds <= 0:
+            raise ValueError("NOTIFICATION_REQUEST_TIMEOUT_SECONDS must be > 0")
+        if self.notification_max_retries < 0:
+            raise ValueError("NOTIFICATION_MAX_RETRIES must be >= 0")
         return self
 
     # ------------------------------------------------------------------ #
@@ -122,6 +171,26 @@ class Settings(BaseSettings):
     @property
     def active_end_time(self) -> dt_time:
         return _parse_hhmm(self.realtime_active_end)
+
+    @property
+    def notification_send_time_value(self) -> dt_time:
+        return _parse_hhmm(self.notification_send_time)
+
+    @staticmethod
+    def _csv(value: str) -> List[str]:
+        return list(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
+
+    @property
+    def telegram_chat_id_list(self) -> List[str]:
+        return self._csv(self.telegram_chat_ids)
+
+    @property
+    def zalo_recipient_id_list(self) -> List[str]:
+        return self._csv(self.zalo_recipient_ids)
+
+    @property
+    def facebook_messenger_recipient_id_list(self) -> List[str]:
+        return self._csv(self.facebook_messenger_recipient_ids)
 
 
 @lru_cache(maxsize=1)
