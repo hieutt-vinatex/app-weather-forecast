@@ -7,6 +7,7 @@ fail fast instead of surfacing as obscure runtime errors later.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import time as dt_time
 from functools import lru_cache
 from typing import List
@@ -23,6 +24,16 @@ def _parse_hhmm(value: str) -> dt_time:
         raise ValueError(f"Expected HH:MM, got {value!r}")
     hour, minute = int(parts[0]), int(parts[1])
     return dt_time(hour=hour, minute=minute)
+
+
+@dataclass(frozen=True)
+class CloudJobConfig:
+    account_id: str
+    namespace_id: str
+    api_token: str
+    max_value_bytes: int
+    operation_ttl_seconds: int
+    job_timeout_seconds: float
 
 
 class Settings(BaseSettings):
@@ -60,6 +71,13 @@ class Settings(BaseSettings):
     realtime_min_poll_seconds: float = 1.0
 
     manual_refresh_cooldown_seconds: float = 5.0
+
+    cloudflare_account_id: str = ""
+    cloudflare_kv_namespace_id: str = ""
+    cloudflare_api_token: SecretStr | None = None
+    cloud_max_value_bytes: int = 20 * 1024 * 1024
+    cloud_operation_ttl_seconds: int = 86400
+    cloud_job_timeout_seconds: float = 900.0
 
     # Server-side absence notifications. Delivery credentials remain on the
     # backend and are never exposed through the API/frontend.
@@ -135,6 +153,12 @@ class Settings(BaseSettings):
             raise ValueError("SOURCE_MAX_RETRIES must be >= 0")
         if self.source_max_concurrency < 1:
             raise ValueError("SOURCE_MAX_CONCURRENCY must be >= 1")
+        if self.cloud_max_value_bytes < 1:
+            raise ValueError("CLOUD_MAX_VALUE_BYTES must be >= 1")
+        if self.cloud_operation_ttl_seconds < 60:
+            raise ValueError("CLOUD_OPERATION_TTL_SECONDS must be >= 60")
+        if self.cloud_job_timeout_seconds <= 0:
+            raise ValueError("CLOUD_JOB_TIMEOUT_SECONDS must be > 0")
         if self.notification_min_days < 1:
             raise ValueError("NOTIFICATION_MIN_DAYS must be >= 1")
         if self.notification_max_days < self.notification_min_days:
@@ -175,6 +199,32 @@ class Settings(BaseSettings):
     @property
     def notification_send_time_value(self) -> dt_time:
         return _parse_hhmm(self.notification_send_time)
+
+    def require_cloud_job_config(self) -> CloudJobConfig:
+        missing: list[str] = []
+        if not self.cloudflare_account_id.strip():
+            missing.append("CLOUDFLARE_ACCOUNT_ID")
+        if not self.cloudflare_kv_namespace_id.strip():
+            missing.append("CLOUDFLARE_KV_NAMESPACE_ID")
+        token = (
+            self.cloudflare_api_token.get_secret_value().strip()
+            if self.cloudflare_api_token is not None
+            else ""
+        )
+        if not token:
+            missing.append("CLOUDFLARE_API_TOKEN")
+        if missing:
+            raise ValueError(
+                "Missing cloud job configuration: " + ", ".join(missing)
+            )
+        return CloudJobConfig(
+            account_id=self.cloudflare_account_id.strip(),
+            namespace_id=self.cloudflare_kv_namespace_id.strip(),
+            api_token=token,
+            max_value_bytes=self.cloud_max_value_bytes,
+            operation_ttl_seconds=self.cloud_operation_ttl_seconds,
+            job_timeout_seconds=self.cloud_job_timeout_seconds,
+        )
 
     @staticmethod
     def _csv(value: str) -> List[str]:
