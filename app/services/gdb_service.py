@@ -23,24 +23,16 @@ from datetime import date, datetime
 from app.cache.simple_cache import SingleFlight, TTLCache
 from app.config import Settings
 from app.realtime.state import RealtimeState
-from app.schemas.gdb import (
-    GdbRecord,
-    Meta,
-    PrizeResults,
-    RecordError,
-    SnapshotResponse,
-)
-from app.services.statistics_service import ValidRecord, compute_statistics
+from app.schemas.gdb import SnapshotResponse
+from app.services.snapshot_builder import SnapshotBuildContext, assemble_snapshot
 from app.utils.date_helper import (
     build_source_url,
     date_range,
     to_iso,
-    to_label,
     today_in_tz,
-    weekday_name_vi,
 )
 from app.utils.fetcher import ConditionalHeaders, Fetcher, FetchStatus
-from app.utils.parser import PRIZE_COUNTS, PRIZE_KEYS, ParseStatus, parse_gdb
+from app.utils.parser import PRIZE_KEYS, ParseStatus, parse_gdb
 
 logger = logging.getLogger("app.gdb_service")
 
@@ -194,86 +186,18 @@ class GdbService:
     def _assemble(
         self, days: int, outcomes: list[DayOutcome], state: RealtimeState
     ) -> SnapshotResponse:
-        records: list[GdbRecord] = []
-        valid_all: list[ValidRecord] = []
-        valid_by_prize: dict[str, list[ValidRecord]] = {
-            prize: [] for prize in PRIZE_KEYS
-        }
-        errors: list[RecordError] = []
-        missing: list[str] = []
-        incomplete: list[str] = []
-
-        for outcome in outcomes:  # already ascending by date
-            if outcome.ok and outcome.result_count > 0:
-                prize_values = {
-                    prize: list(outcome.prizes.get(prize, ())) for prize in PRIZE_KEYS
-                }
-                records.append(
-                    GdbRecord(
-                        gdb=outcome.gdb,
-                        prizes=PrizeResults(**prize_values),
-                        draw_complete=outcome.complete,
-                        date=outcome.date_iso,
-                        date_label=to_label(outcome.day),
-                        day_name=weekday_name_vi(outcome.day),
-                        source_url=outcome.source_url,
-                    )
-                )
-                if not outcome.complete:
-                    incomplete.append(outcome.date_iso)
-                for prize, values in prize_values.items():
-                    for value in values:
-                        record = ValidRecord(gdb=value[-2:], date_iso=outcome.date_iso)
-                        valid_all.append(record)
-                        valid_by_prize[prize].append(record)
-            else:
-                missing.append(outcome.date_iso)
-                errors.append(
-                    RecordError(date=outcome.date_iso, reason=outcome.reason or "unknown")
-                )
-
-        expected_all = sum(PRIZE_COUNTS.values())
-        statistics = compute_statistics(
-            valid_all,
-            attempted_days=days,
-            expected_results_per_day=expected_all,
-        )
-        statistics_by_prize = {
-            prize: compute_statistics(
-                valid_by_prize[prize],
-                attempted_days=days,
-                expected_results_per_day=PRIZE_COUNTS[prize],
-            )
-            for prize in PRIZE_KEYS
-        }
-
-        any_cached = len(self._history_cache) > 0
-        meta = Meta(
-            requested_days=days,
-            available_records=len(records),
-            failed_count=len(errors),
-            missing_dates=missing,
-            incomplete_dates=incomplete,
-            available_numbers=len(valid_all),
-            errors=errors,
-            partial=bool(errors or incomplete),
-            cached=any_cached,
-            stale=False,
+        context = SnapshotBuildContext(
             fetched_at=datetime.now(self._tz),
             last_source_check_at=state.last_source_check_at,
             last_successful_check_at=state.last_successful_check_at,
             last_changed_at=state.last_changed_at,
             snapshot_version=state.snapshot_version,
+            source=_source_host(self._settings.source_base_url),
             poll_interval_seconds=state.poll_interval_seconds,
             realtime_enabled=state.realtime_enabled,
-            source=_source_host(self._settings.source_base_url),
+            cached=len(self._history_cache) > 0,
         )
-        return SnapshotResponse(
-            data=records,
-            statistics=statistics,
-            statistics_by_prize=statistics_by_prize,
-            meta=meta,
-        )
+        return assemble_snapshot(days, outcomes, context)
 
     # ------------------------------------------------------------------ #
     # Introspection
