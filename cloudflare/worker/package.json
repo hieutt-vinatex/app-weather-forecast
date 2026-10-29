@@ -1,0 +1,17 @@
+{
+  "name": "app-weather-forecast-worker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "5.7.2",
+    "vitest": "2.1.9",
+    "wrangler": "3.114.17"
+  }
+}
