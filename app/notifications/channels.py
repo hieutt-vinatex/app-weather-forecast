@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 
 from app.config import Settings
-from app.notifications.state_store import NotificationStateStore
+from app.notifications.state_store import NotificationStateProtocol
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class NotificationDispatcher:
     def __init__(
         self,
         settings: Settings,
-        state_store: NotificationStateStore,
+        state_store: NotificationStateProtocol,
         *,
         sleep=asyncio.sleep,
     ) -> None:
@@ -262,7 +262,7 @@ class NotificationDispatcher:
             self._zalo_access_token = access_token
             if isinstance(new_refresh, str) and new_refresh:
                 self._zalo_refresh_token = new_refresh
-            await self._state_store.set_provider(
+            await self._state_store.update_provider(
                 "zalo",
                 {
                     "appId": app_id,

@@ -16,6 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.cloud.cloudflare_kv import CloudflareKVStore  # noqa: E402
 from app.cloud.data_jobs import DataJobResult, run_data_job  # noqa: E402
+from app.cloud.notification_jobs import (  # noqa: E402
+    CloudNotificationResult,
+    run_manual_notification,
+    run_scheduled_notification,
+)
 from app.config import Settings, get_settings  # noqa: E402
 
 
@@ -25,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync = subparsers.add_parser("sync", help="publish data snapshots")
     sync.add_argument("--mode", choices=("full", "incremental"), required=True)
     sync.add_argument("--request-id")
+    telegram = subparsers.add_parser("telegram", help="send Telegram reports")
+    telegram.add_argument("--mode", choices=("scheduled", "manual"), required=True)
+    telegram.add_argument("--request-id")
     return parser
 
 
@@ -47,14 +55,46 @@ async def _run_sync(args: argparse.Namespace, settings: Settings) -> DataJobResu
         )
 
 
+async def _run_telegram(
+    args: argparse.Namespace, settings: Settings
+) -> CloudNotificationResult:
+    config = settings.require_cloud_job_config()
+    timeout = aiohttp.ClientTimeout(total=settings.notification_request_timeout_seconds + 5)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        store = CloudflareKVStore(
+            config.account_id,
+            config.namespace_id,
+            config.api_token,
+            session,
+        )
+        clock = lambda: datetime.now(settings.tzinfo)
+        if args.mode == "scheduled":
+            return await run_scheduled_notification(
+                settings, store, clock=clock
+            )
+        if not args.request_id:
+            raise ValueError("--request-id is required for manual Telegram mode")
+        return await run_manual_notification(
+            settings,
+            store,
+            args.request_id,
+            clock=clock,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         settings = get_settings()
         config = settings.require_cloud_job_config()
+        coroutine = (
+            _run_sync(args, settings)
+            if args.command == "sync"
+            else _run_telegram(args, settings)
+        )
         result = asyncio.run(
             asyncio.wait_for(
-                _run_sync(args, settings),
+                coroutine,
                 timeout=config.job_timeout_seconds,
             )
         )
@@ -73,8 +113,10 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "status": result.status,
                 "mode": result.mode,
-                "version": result.version,
-                "recordCount": result.record_count,
+                "version": getattr(result, "version", None),
+                "recordCount": getattr(result, "record_count", None),
+                "deliveredCount": getattr(result, "delivered_count", None),
+                "failedCount": getattr(result, "failed_count", None),
                 "reason": result.reason,
             },
             ensure_ascii=False,

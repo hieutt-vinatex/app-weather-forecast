@@ -7,7 +7,23 @@ import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+
+class NotificationStateProtocol(Protocol):
+    async def sent_targets(self, event_key: str) -> set[str]: ...
+
+    async def mark_sent(
+        self, event_key: str, target_key: str, sent_at: datetime
+    ) -> None: ...
+
+    async def is_no_match(self, event_key: str) -> bool: ...
+
+    async def mark_no_match(self, event_key: str, checked_at: datetime) -> None: ...
+
+    async def get_provider(self, provider: str) -> dict[str, Any]: ...
+
+    async def update_provider(self, provider: str, value: dict[str, Any]) -> None: ...
 
 
 class NotificationStateStore:
@@ -50,11 +66,15 @@ class NotificationStateStore:
             state = self._load()
             return dict(state.get("providers", {}).get(provider, {}))
 
-    async def set_provider(self, provider: str, value: dict[str, Any]) -> None:
+    async def update_provider(self, provider: str, value: dict[str, Any]) -> None:
         async with self._lock:
             state = self._load()
             state.setdefault("providers", {})[provider] = value
             self._save(state)
+
+    async def set_provider(self, provider: str, value: dict[str, Any]) -> None:
+        """Backward-compatible alias for callers outside the protocol."""
+        await self.update_provider(provider, value)
 
     def _load(self) -> dict[str, Any]:
         if self._state is not None:
