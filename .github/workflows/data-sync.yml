@@ -1,0 +1,71 @@
+name: Cloud data sync
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+    - cron: "47-57/5 17 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+    - cron: "2-57/5 18 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+    - cron: "2 19 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+  repository_dispatch:
+    types: [cloud-data-refresh]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Sync mode
+        required: true
+        default: full
+        type: choice
+        options: [full, incremental]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-data-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUD_JOB_TIMEOUT_SECONDS: "1200"
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_SCHEDULE: ${{ github.event.schedule }}
+      INPUT_MODE: ${{ inputs.mode }}
+      REQUEST_ID: ${{ github.event.client_payload.request_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-cloud.txt
+      - run: pip install -r requirements-cloud.txt
+      - name: Run bounded data job
+        shell: bash
+        run: |
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            if [[ "$EVENT_SCHEDULE" == "17 3 * * *" ]]; then
+              mode="full"
+            else
+              mode="incremental"
+            fi
+          elif [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            mode="incremental"
+          else
+            mode="${INPUT_MODE:-full}"
+          fi
+
+          args=(sync --mode "$mode")
+          if [[ -n "$REQUEST_ID" ]]; then
+            args+=(--request-id "$REQUEST_ID")
+          fi
+          python scripts/cloud_job.py "${args[@]}"

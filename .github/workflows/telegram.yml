@@ -1,0 +1,75 @@
+name: Cloud Telegram notification
+
+on:
+  schedule:
+    - cron: "7-52/15 9-11 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+    - cron: "7 12 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+  repository_dispatch:
+    types: [cloud-telegram-send]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Notification mode
+        required: true
+        default: scheduled
+        type: choice
+        options: [scheduled, manual]
+      request_id:
+        description: Optional UUID for a manual operation
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-telegram
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      NOTIFICATION_DRY_RUN: ${{ vars.NOTIFICATION_DRY_RUN || 'true' }}
+      CLOUD_JOB_TIMEOUT_SECONDS: "900"
+      EVENT_NAME: ${{ github.event_name }}
+      INPUT_MODE: ${{ inputs.mode }}
+      INPUT_REQUEST_ID: ${{ inputs.request_id }}
+      DISPATCH_REQUEST_ID: ${{ github.event.client_payload.request_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-cloud.txt
+      - run: pip install -r requirements-cloud.txt
+      - name: Run bounded Telegram job
+        shell: bash
+        run: |
+          mode="scheduled"
+          request_id=""
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            mode="manual"
+            request_id="$DISPATCH_REQUEST_ID"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            mode="${INPUT_MODE:-scheduled}"
+            request_id="$INPUT_REQUEST_ID"
+          fi
+
+          args=(telegram --mode "$mode")
+          if [[ "$mode" == "manual" ]]; then
+            if [[ -z "$request_id" ]]; then
+              request_id="$(python -c 'import uuid; print(uuid.uuid4())')"
+            fi
+            args+=(--request-id "$request_id")
+          fi
+          python scripts/cloud_job.py "${args[@]}"

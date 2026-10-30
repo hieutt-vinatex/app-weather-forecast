@@ -64,7 +64,7 @@ function env(
     ) as unknown as KVNamespace,
     ALLOWED_ORIGINS: "https://app.example,https://preview.example",
     NOTIFICATION_ADMIN_TOKEN: "",
-    GITHUB_TOKEN: "",
+    GITHUB_DISPATCH_TOKEN: "",
     GITHUB_OWNER: "",
     GITHUB_REPO: "",
   };

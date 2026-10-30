@@ -9,6 +9,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Awaitable, Callable, TypeVar
 
 import aiohttp
 
@@ -22,6 +23,9 @@ from app.cloud.notification_jobs import (  # noqa: E402
     run_scheduled_notification,
 )
 from app.config import Settings, get_settings  # noqa: E402
+
+JobResult = DataJobResult | CloudNotificationResult
+ResultT = TypeVar("ResultT")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,22 +86,26 @@ async def _run_telegram(
         )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_async(awaitable: Awaitable[ResultT], timeout: float) -> ResultT:
+    return asyncio.run(asyncio.wait_for(awaitable, timeout=timeout))
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    settings_factory: Callable[[], Settings] = get_settings,
+    run_async: Callable[[Awaitable[JobResult], float], JobResult] = _run_async,
+) -> int:
     args = build_parser().parse_args(argv)
     try:
-        settings = get_settings()
+        settings = settings_factory()
         config = settings.require_cloud_job_config()
         coroutine = (
             _run_sync(args, settings)
             if args.command == "sync"
             else _run_telegram(args, settings)
         )
-        result = asyncio.run(
-            asyncio.wait_for(
-                coroutine,
-                timeout=config.job_timeout_seconds,
-            )
-        )
+        result = run_async(coroutine, config.job_timeout_seconds)
     except ValueError as exc:
         print(f"cloud job configuration error: {exc}", file=sys.stderr)
         return 2
@@ -122,7 +130,18 @@ def main(argv: list[str] | None = None) -> int:
             ensure_ascii=False,
         )
     )
-    return 0 if result.status in {"succeeded", "no_change"} else 1
+    successful_statuses = {
+        "succeeded",
+        "no_change",
+        "delivered",
+        "already_delivered",
+        "dry_run",
+        "not_due",
+        "waiting",
+        "expired",
+        "no_match",
+    }
+    return 0 if result.status in successful_statuses else 1
 
 
 if __name__ == "__main__":

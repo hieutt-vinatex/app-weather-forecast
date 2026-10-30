@@ -54,7 +54,7 @@ export interface Env {
   SNAPSHOTS: KVNamespace;
   ALLOWED_ORIGINS: string;
   NOTIFICATION_ADMIN_TOKEN: string;
-  GITHUB_TOKEN: string;
+  GITHUB_DISPATCH_TOKEN: string;
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   OPERATION_TTL_SECONDS?: string;

@@ -16,7 +16,7 @@ export async function dispatchRepositoryEvent(
   eventType: RepositoryEventType,
   requestId: string,
 ): Promise<void> {
-  if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
+  if (!env.GITHUB_DISPATCH_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
     throw new GitHubDispatchError();
   }
   const owner = encodeURIComponent(env.GITHUB_OWNER);
@@ -30,7 +30,7 @@ export async function dispatchRepositoryEvent(
         method: "POST",
         headers: {
           Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+          Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
           "Content-Type": "application/json",
           "User-Agent": "app-weather-forecast-worker",
           "X-GitHub-Api-Version": "2022-11-28",

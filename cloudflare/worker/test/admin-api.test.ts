@@ -42,7 +42,7 @@ function makeEnv(
     SNAPSHOTS: kv as unknown as KVNamespace,
     ALLOWED_ORIGINS: "https://app.example",
     NOTIFICATION_ADMIN_TOKEN: "correct-secret",
-    GITHUB_TOKEN: "github-secret",
+    GITHUB_DISPATCH_TOKEN: "github-secret",
     GITHUB_OWNER: "owner",
     GITHUB_REPO: "repo",
     GITHUB_FETCH: githubFetch as typeof fetch,
