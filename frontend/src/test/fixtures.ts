@@ -77,6 +77,9 @@ export function makeSnapshot(
       pollIntervalSeconds: 1,
       realtimeEnabled: true,
       source: "xsmn.mobi",
+      generatedAt: "2026-07-27T18:25:02+07:00",
+      freshnessStatus: "current",
+      lastJobStatus: "succeeded",
     },
   };
 }

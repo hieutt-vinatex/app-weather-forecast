@@ -75,6 +75,9 @@ export interface Meta {
   pollIntervalSeconds: number;
   realtimeEnabled: boolean;
   source: string;
+  generatedAt: string;
+  freshnessStatus: FreshnessStatus;
+  lastJobStatus: string;
 }
 
 export interface SnapshotResponse {
@@ -118,6 +121,31 @@ export interface SendNotificationNowResponse {
   candidates: NotificationCandidate[];
   reason: string | null;
   results: NotificationDeliveryResult[];
+}
+
+export type FreshnessStatus =
+  | "current"
+  | "updating"
+  | "delayed"
+  | "stale"
+  | "offline";
+
+export type OperationKind = "data_refresh" | "telegram_send";
+export type OperationStatus = "queued" | "running" | "succeeded" | "failed";
+
+export interface AcceptedOperation {
+  requestId: string;
+  status: "queued";
+  statusUrl: string;
+}
+
+export interface OperationRecord {
+  requestId: string;
+  kind: OperationKind;
+  status: OperationStatus;
+  createdAt: string;
+  updatedAt: string;
+  message: string;
 }
 
 export interface HeartbeatEvent {

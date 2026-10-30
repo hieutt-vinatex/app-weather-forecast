@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { useGdbRealtime } from "./useGdbRealtime";
 import { useGdbSnapshot } from "./useGdbSnapshot";
+import { useCloudOperation } from "./useCloudOperation";
 import { useManualRefresh } from "./useManualRefresh";
 import { useSendAbsenceNotification } from "./useSendAbsenceNotification";
 import { snapshotQueryKey } from "../api/client";
@@ -68,11 +69,12 @@ describe("useGdbSnapshot fallback polling", () => {
   afterEach(() => vi.restoreAllMocks());
 
   function stubFetch() {
-    const fn = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => makeSnapshot(30, 1),
-    }));
+    const fn = vi.fn(async () =>
+      new Response(JSON.stringify(makeSnapshot(30, 1)), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     vi.stubGlobal("fetch", fn as unknown as typeof fetch);
     return fn;
   }
@@ -139,6 +141,57 @@ describe("useManualRefresh", () => {
       await result.current.refresh();
     });
     expect(result.current.isError).toBe(false);
+    expect(result.current.message).toContain("Đã cập nhật");
+  });
+});
+
+describe("useCloudOperation", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("polls a queued operation until success", async () => {
+    vi.useFakeTimers();
+    const requestId = "123e4567-e89b-42d3-a456-426614174000";
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requestId,
+            status: "queued",
+            statusUrl: `/api/operations/${requestId}`,
+          }),
+          { status: 202, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requestId,
+            kind: "data_refresh",
+            status: "succeeded",
+            createdAt: "2026-10-29T11:00:00Z",
+            updatedAt: "2026-10-29T11:01:00Z",
+            message: "Đã cập nhật",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchFn);
+    const { result } = renderHook(() => useCloudOperation("refresh"));
+
+    let pending: Promise<void>;
+    act(() => {
+      pending = result.current.start("admin-secret");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+      await pending!;
+    });
+
+    expect(result.current.status).toBe("succeeded");
     expect(result.current.message).toContain("Đã cập nhật");
   });
 });
