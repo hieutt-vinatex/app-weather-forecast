@@ -1,17 +1,21 @@
-# Cài đặt và vận hành hệ thống
+# Cài đặt, kiểm thử và đường local legacy
 
-Tài liệu nhanh cho developer. Phiên bản hiện tại sử dụng Telegram cho thông báo.
+Production được chọn là Vercel + Cloudflare Worker/KV + GitHub Actions. Làm theo
+[CLOUD_DEPLOYMENT.md](./CLOUD_DEPLOYMENT.md) để deploy mà không cần chạy ứng dụng
+trên máy cá nhân.
 
-## 1. Yêu cầu
+Tài liệu này chỉ dành cho phát triển, test và đối chiếu backend FastAPI/Docker cũ.
+
+## 1. Yêu cầu phát triển
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 20
 - Git
-- Docker + Docker Compose nếu triển khai bằng container
+- Docker + Docker Compose chỉ khi cần kiểm tra đường container legacy
 
-## 2. Chạy local
+## 2. Cài dependency
 
-Tại thư mục dự án:
+Tại thư mục repository:
 
 ```bash
 python -m venv venv
@@ -19,70 +23,17 @@ python -m venv venv
 cp .env.example .env
 
 cd frontend
-npm install
+npm install --no-package-lock
 cp .env.example .env
-cd ..
+
+cd ../cloudflare/worker
+npm ci
 ```
 
-Các biến tối thiểu trong `.env`:
+Trên macOS/Linux, thay `./venv/Scripts/python.exe` bằng `./venv/bin/python`.
+Không điền secret production vào file local hoặc commit `.env`.
 
-```dotenv
-APP_ENV=development
-CORS_ORIGINS=http://localhost:5173
-REALTIME_ENABLED=true
-REALTIME_TIMEZONE=Asia/Ho_Chi_Minh
-
-NOTIFICATIONS_ENABLED=true
-NOTIFICATION_DRY_RUN=true
-NOTIFICATION_MIN_DAYS=19
-NOTIFICATION_MAX_DAYS=25
-NOTIFICATION_SEND_TIME=09:00
-NOTIFICATION_ADMIN_TOKEN=mot-chuoi-ngau-nhien-dai
-```
-
-Tạo `NOTIFICATION_ADMIN_TOKEN`:
-
-```bash
-./venv/Scripts/python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-Cấu hình Telegram theo [TELEGRAM_GROUP.md](./TELEGRAM_GROUP.md).
-
-Chạy backend:
-
-```bash
-./venv/Scripts/python.exe -m uvicorn app.main:app \
-  --host 0.0.0.0 --port 8000 --reload
-```
-
-Chạy frontend ở terminal khác:
-
-```bash
-cd frontend
-npm run dev
-```
-
-Truy cập `http://localhost:5173`.
-
-## 3. Kiểm tra hệ thống
-
-```bash
-curl http://localhost:8000/api/health
-curl http://localhost:8000/api/notifications/status
-```
-
-Kết quả notification đúng cần có:
-
-```json
-{
-  "enabled": true,
-  "running": true,
-  "configuredChannels": ["telegram"],
-  "configuredTargetCount": 1
-}
-```
-
-Chạy test trước khi deploy:
+## 3. Chạy toàn bộ kiểm tra
 
 ```bash
 ./venv/Scripts/python.exe -m pytest -q
@@ -91,13 +42,42 @@ cd frontend
 npm test
 npm run lint
 npm run build
+
+cd ../cloudflare/worker
+npm test
+npm run typecheck
 ```
 
-## 4. Chạy production bằng Docker
+Workflow CI dùng Python 3.12 và Node 20, nên kết quả local cần khớp hai phiên bản
+này trước khi merge.
 
-1. Tạo `.env` từ `.env.example` và điền cấu hình thật.
-2. Nếu dùng domain, sửa `CORS_ORIGINS` trong `docker-compose.yml` thành URL frontend.
-3. Khởi động:
+## 4. Chạy FastAPI local legacy
+
+Phần này không dùng cho production cloud. Các URL loopback bên dưới chỉ là ví dụ
+local an toàn.
+
+Trong `.env`, giữ cấu hình development, bật notification dry-run và tự tạo
+`NOTIFICATION_ADMIN_TOKEN` riêng cho local. Sau đó chạy:
+
+```bash
+./venv/Scripts/python.exe -m uvicorn app.main:app \
+  --host 127.0.0.1 --port 8000 --reload
+```
+
+Ở terminal khác:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Frontend local mặc định truy cập `http://localhost:5173`; backend legacy dùng
+`http://localhost:8000`. Scheduler/cache của đường này nằm trong bộ nhớ và chỉ
+hỗ trợ một Uvicorn worker.
+
+## 5. Docker Compose local legacy
+
+Docker Compose được giữ để kiểm tra parity, không phải đường deploy đã chọn:
 
 ```bash
 docker compose up -d --build
@@ -105,17 +85,16 @@ docker compose ps
 docker compose logs -f backend
 ```
 
-Frontend: `http://localhost:8080`  
-Backend: `http://localhost:8000`
+Không public container legacy trực tiếp ra Internet. Nếu buộc phải dùng ngoài
+local, phải bổ sung HTTPS, secret store, backup state và vận hành server liên tục;
+những yêu cầu đó trái với mục tiêu chi phí 0 của kiến trúc đã duyệt.
 
-Thư mục `./data` được mount vào container để giữ trạng thái chống gửi trùng qua
-các lần restart.
+## 6. Cấu hình Telegram
 
-## 5. Lưu ý production
+- Production cloud: xem [TELEGRAM_GROUP.md](./TELEGRAM_GROUP.md).
+- Local legacy: `.env.example` vẫn liệt kê biến tương thích; luôn giữ
+  `NOTIFICATION_DRY_RUN=true` cho đến khi kiểm tra đúng group.
 
-- Backend phải chạy đúng **1 Uvicorn worker** vì scheduler/cache đang dùng bộ nhớ.
-- Không commit `.env`, Bot Token hoặc `NOTIFICATION_ADMIN_TOKEN`.
-- Đặt backend sau HTTPS/reverse proxy khi public Internet.
-- Server cần được chạy liên tục và cho phép kết nối HTTPS ra Telegram.
-- Sau khi sửa `.env`, luôn restart backend.
-
+Không commit `.env`, bot token, chat ID riêng tư, Cloudflare token hoặc khóa quản
+trị. Nếu một secret từng xuất hiện trong commit/log, phải thu hồi và tạo lại thay
+vì chỉ xóa dòng đó.

@@ -1,26 +1,23 @@
 # Gửi thông báo tự động vào Telegram Group
 
-## 1. Tạo bot
+Production dùng GitHub Actions để gửi Telegram; không cần mở trình duyệt, chạy
+FastAPI hoặc giữ máy cá nhân hoạt động. Thiết lập cloud tổng thể nằm tại
+[CLOUD_DEPLOYMENT.md](./CLOUD_DEPLOYMENT.md).
 
-1. Mở Telegram và nhắn cho `@BotFather`.
-2. Gửi `/newbot` và làm theo hướng dẫn.
-3. Lưu Bot Token. Không commit hoặc gửi token qua chat/email.
+## 1. Tạo bot và thêm vào group
 
-## 2. Thêm bot vào group
+1. Mở Telegram, nhắn `@BotFather`, gửi `/newbot` và làm theo hướng dẫn.
+2. Lưu bot token thẳng vào password manager; không gửi qua chat/email và không
+   commit vào repository.
+3. Mở group đích → **Add members** → thêm bot.
+4. Cho bot quyền **Send messages**. Bot không cần quyền admin nếu group cho thành
+   viên gửi tin.
+5. Gửi `/start@ten_bot_cua_ban` trong group để tạo update mới.
 
-1. Mở group → **Add members** → chọn bot.
-2. Đảm bảo bot có quyền **Send messages**.
-3. Trong group, gửi:
+## 2. Lấy Group Chat ID an toàn
 
-```text
-/start@ten_bot_cua_ban
-```
-
-Bot không cần quyền admin nếu group cho thành viên gửi tin bình thường.
-
-## 3. Lấy Group Chat ID
-
-Chạy bằng Bash/WSL:
+Có thể dùng một shell tạm thời chỉ để đọc `getUpdates`; lệnh không chạy ứng dụng
+local và không ghi token vào command history:
 
 ```bash
 read -rsp "Telegram Bot Token: " TG_TOKEN
@@ -29,87 +26,84 @@ curl -sS "https://api.telegram.org/bot${TG_TOKEN}/getUpdates"
 unset TG_TOKEN
 ```
 
-Tìm object có `chat.title` đúng tên group và lấy `chat.id`:
+Trong JSON, tìm object có `chat.title` đúng group và lấy `chat.id`. Group ID thường
+là số âm; supergroup thường có tiền tố `-100`. Nếu `result` rỗng, gửi một lệnh mới
+trong group rồi gọi lại. Nếu bot đang dùng webhook, tạm ngắt webhook hoặc đọc
+update từ hệ thống webhook hiện tại.
 
-```json
-{
-  "chat": {
-    "id": -1001234567890,
-    "title": "Tên group",
-    "type": "supergroup"
-  }
-}
-```
+Không dán toàn bộ response `getUpdates` vào issue/log vì có thể chứa thông tin
+người dùng và nội dung tin nhắn.
 
-Group ID thường là số âm; supergroup thường bắt đầu bằng `-100`. Nếu `result`
-rỗng, gửi lại lệnh trong group rồi gọi `getUpdates` lần nữa.
+## 3. Lưu cấu hình trên GitHub
 
-## 4. Cấu hình `.env`
+Mở repository **Settings → Secrets and variables → Actions**.
 
-```dotenv
-NOTIFICATIONS_ENABLED=true
-NOTIFICATION_DRY_RUN=true
-NOTIFICATION_MIN_DAYS=19
-NOTIFICATION_MAX_DAYS=25
-NOTIFICATION_SEND_TIME=09:00
-NOTIFICATION_ADMIN_TOKEN=chuoi-ngau-nhien-dai
+Tạo repository secrets, không ghi giá trị vào file:
 
-TELEGRAM_BOT_TOKEN=bot-token-tu-botfather
-TELEGRAM_CHAT_IDS=-1001234567890
-```
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_IDS`
 
-Nhiều group dùng dấu phẩy:
+Nhiều group được phân tách bằng dấu phẩy trong `TELEGRAM_CHAT_IDS`.
 
-```dotenv
-TELEGRAM_CHAT_IDS=-1001234567890,-1009876543210
-```
+Tạo repository variable:
 
-Restart backend sau khi sửa `.env`.
+- `NOTIFICATION_DRY_RUN=true`
 
-## 5. Thử cấu hình
+Job Telegram còn dùng ba Cloudflare secrets đã cấu hình theo tài liệu cloud:
 
-Kiểm tra backend đã nhận group:
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_KV_NAMESPACE_ID`
+- `CLOUDFLARE_API_TOKEN`
 
-```bash
-curl http://localhost:8000/api/notifications/status
-```
+## 4. Dry-run trước khi gửi thật
 
-Gửi dry-run; lệnh này chưa gọi Telegram vì `NOTIFICATION_DRY_RUN=true`:
+1. Chạy full sync thành công để KV có snapshot hợp lệ.
+2. Mở **Actions → Cloud Telegram notification → Run workflow**.
+3. Chọn `mode=scheduled` và chạy khi `NOTIFICATION_DRY_RUN=true`.
+4. Kiểm tra log: đúng kỳ tham chiếu, khoảng 19–25 ngày và số ứng viên; log không
+   được chứa bot token hoặc chat ID đầy đủ.
+5. Nếu dữ liệu chưa đủ 25 ngày hoặc kỳ chưa hoàn tất, job chủ động không gửi.
 
-```bash
-curl -X POST http://localhost:8000/api/notifications/test \
-  -H "X-Notification-Token: gia-tri-NOTIFICATION_ADMIN_TOKEN"
-```
+Dry-run không gọi Telegram và không chứng minh quyền gửi của bot. Bước gửi thật
+nên dùng group test trước.
 
-Nếu response có `success: true`, đổi:
+## 5. Gửi test thật và bật lịch
 
-```dotenv
-NOTIFICATION_DRY_RUN=false
-```
+1. Đổi GitHub variable `NOTIFICATION_DRY_RUN=false`.
+2. Chạy workflow với `mode=manual`.
+3. Xác nhận group test nhận đúng một báo cáo.
+4. Chuyển `TELEGRAM_CHAT_IDS` sang group production nếu cần và chạy lại một lần.
+5. Giữ workflow **Cloud Telegram notification** enabled.
 
-Restart backend và gọi lại `/api/notifications/test`. Group sẽ nhận tin kiểm tra.
+Lịch hiện tại chạy mỗi 15 phút từ 09:07 đến 12:07 theo
+`Asia/Ho_Chi_Minh`. Sau một lần scheduled gửi thành công, state trong Workers KV
+khiến các lần thử sau trở thành no-op. Nếu một đích lỗi, retry chỉ nhắm phần chưa
+thành công.
 
-## 6. Gửi tự động và gửi ngay
+## 6. Gửi thủ công từ dashboard
 
-- Tự động: backend kiểm tra lúc `09:00` sáng hôm sau. Chỉ gửi khi dữ liệu 25 ngày
-  đầy đủ và có số chưa xuất hiện từ 19–25 ngày.
-- Gửi ngay: trên dashboard, nhập `NOTIFICATION_ADMIN_TOKEN` rồi bấm
-  **Gửi thông báo 19–25 ngày ngay**.
-- Gửi ngay bằng API:
+Trong thẻ **Thao tác quản trị trên cloud**:
 
-```bash
-curl -X POST http://localhost:8000/api/notifications/send-now \
-  -H "X-Notification-Token: gia-tri-NOTIFICATION_ADMIN_TOKEN"
-```
+1. nhập `NOTIFICATION_ADMIN_TOKEN`;
+2. bấm **Gửi Telegram ngay**;
+3. chờ trạng thái `Đã xếp hàng → Đang chạy trên cloud → Đã hoàn tất`.
+
+Khóa quản trị chỉ tồn tại trong bộ nhớ tab và mất khi reload. Mỗi lần bấm gửi thủ
+công là một yêu cầu mới; bấm lại có thể tạo thêm một tin nhắn Telegram. Worker có
+cooldown để chặn hai job cùng loại chạy đồng thời nhưng không chống lặp có chủ ý.
 
 ## 7. Lỗi thường gặp
 
-| Lỗi | Cách xử lý |
+| Hiện tượng | Cách xử lý |
 |---|---|
-| `chat not found` | Kiểm tra Group ID, bot đã được thêm vào group và có quyền gửi tin. |
-| Telegram `401` | Bot Token sai hoặc đã bị thu hồi; tạo token mới trong BotFather. |
-| `configuredTargetCount: 0` | Thiếu `TELEGRAM_BOT_TOKEN` hoặc `TELEGRAM_CHAT_IDS`; restart backend. |
-| API `401` | `X-Notification-Token` khác `NOTIFICATION_ADMIN_TOKEN`. |
-| API `404` | `NOTIFICATION_ADMIN_TOKEN` đang trống hoặc backend chưa restart. |
-| `getUpdates` rỗng | Gửi lệnh mới trong group rồi thử lại; kiểm tra bot có đang dùng webhook không. |
+| `chat not found` | Kiểm tra bot đã ở trong group, quyền Send messages và chat ID. |
+| Telegram `401` | Thu hồi token sai/cũ, tạo token mới ở BotFather rồi cập nhật GitHub secret. |
+| Không có ứng viên | Kiểm tra full sync, độ đầy đủ 25 ngày và khoảng 19–25 ngày. |
+| Workflow dry-run mãi | Đặt repository variable `NOTIFICATION_DRY_RUN=false`, không tạo secret cùng tên. |
+| UI trả `401` | `NOTIFICATION_ADMIN_TOKEN` nhập vào khác Worker secret. |
+| UI trả `403` | Origin Vercel chưa nằm chính xác trong `ALLOWED_ORIGINS`. |
+| UI trả `429` | Một job Telegram đang queued/running; chờ job hiện tại kết thúc. |
+| `getUpdates` rỗng | Gửi update mới hoặc kiểm tra webhook của bot. |
 
+Đường FastAPI notification cũ chỉ còn phục vụ local parity; production không đọc
+`TELEGRAM_BOT_TOKEN` từ `.env` trên một server thường trực.
