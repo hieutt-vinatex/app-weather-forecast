@@ -14,6 +14,7 @@ from app.cloud.contracts import (
     JobRecord,
     JsonStore,
     PublicationManifest,
+    PreviousPublication,
     StoredDayOutcome,
     history_key,
     snapshot_key,
@@ -63,6 +64,7 @@ class SnapshotPublisher:
         job: JobRecord,
     ) -> PublicationManifest:
         ordered = sorted(outcomes, key=lambda item: item.day)
+        previous_publication = await self._previous_publication()
         version = context.fetched_at.astimezone(timezone.utc).strftime(
             "%Y%m%dT%H%M%S%fZ"
         )
@@ -85,6 +87,7 @@ class SnapshotPublisher:
             source_reference_date=max((item.day for item in ordered), default=None),
             complete=bool(ordered) and all(item.ok and item.complete for item in ordered),
             last_job=job.model_copy(update={"version": version}),
+            previous_publication=previous_publication,
         )
         manifest_payload = manifest.model_dump(mode="json", by_alias=True)
         self._validate_payload_sizes({**payloads, MANIFEST_KEY: manifest_payload})
@@ -104,6 +107,26 @@ class SnapshotPublisher:
         except Exception:
             logger.warning("snapshot version pruning failed")
         return manifest
+
+    async def _previous_publication(self) -> PreviousPublication | None:
+        try:
+            raw = await self._store.get_json(MANIFEST_KEY)
+            if raw is None:
+                return None
+            manifest = PublicationManifest.model_validate(raw)
+            if any(days not in manifest.snapshot_keys for days in (30, 60, 90)):
+                return None
+            return PreviousPublication(
+                version=manifest.version,
+                generated_at=manifest.generated_at,
+                snapshot_keys=manifest.snapshot_keys,
+                source_reference_date=manifest.source_reference_date,
+                complete=manifest.complete,
+                last_job=manifest.last_job,
+            )
+        except Exception:
+            logger.warning("previous publication pointer could not be retained")
+            return None
 
     async def load_active_history(self) -> list[DayOutcome]:
         try:

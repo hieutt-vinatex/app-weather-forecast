@@ -37,6 +37,7 @@ describe("classifyFreshness", () => {
 
   it("surfaces running and failed jobs without discarding age", () => {
     expect(classifyFreshness(at("18:00", 2, "running"))).toBe("updating");
+    expect(classifyFreshness(at("18:00", 21, "running"))).toBe("stale");
     expect(classifyFreshness(at("18:00", 2, "failed"))).toBe("delayed");
     expect(classifyFreshness(at("18:00", 21, "failed"))).toBe("stale");
   });

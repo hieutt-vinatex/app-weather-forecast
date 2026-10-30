@@ -208,7 +208,8 @@ Publication uses immutable versioned keys followed by one manifest update:
 - `snapshot:v1:<version>:60`
 - `snapshot:v1:<version>:90`
 - `manifest:v1` — active version, generation time, source reference date,
-  completeness, and last job status.
+  completeness, last job status, and a pointer to the immediately preceding
+  publication.
 - `notification-state:v1` — sent targets by event key and rule window.
 - `operation:v1:<request-id>` — queued/running/succeeded/failed state for a
   manual dashboard request, with a short retention period.
@@ -219,6 +220,10 @@ previous complete version. The implementation must measure serialized value
 sizes and fail before approaching KV's per-value limit. If normalized history
 ever exceeds the safe threshold, history is sharded by month without changing
 the public API.
+
+Because KV propagation is eventually consistent, a reader that observes the
+new manifest before its matching snapshot automatically reads the retained
+previous-publication pointer. It never combines payloads from two versions.
 
 Old versions are pruned after a small rollback window. Public values contain no
 credentials or full secret recipient identifiers.
@@ -251,6 +256,8 @@ queued, running, success, or failure message.
 CORS uses an explicit production-origin allowlist. Preview origins are not
 granted administrative access by default. Administrative endpoints have a
 cooldown and reject duplicate in-flight requests of the same type.
+Queued/running records older than the bounded active-operation window are
+marked failed and released so an abandoned dispatch cannot block later work.
 
 ### GitHub Actions workflows
 

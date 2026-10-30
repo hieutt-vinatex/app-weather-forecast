@@ -14,6 +14,7 @@ class KVNotificationStateStore:
     def __init__(self, store: JsonStore) -> None:
         self._store = store
         self._lock = asyncio.Lock()
+        self._state: dict[str, Any] | None = None
 
     async def sent_targets(self, event_key: str) -> set[str]:
         async with self._lock:
@@ -68,20 +69,24 @@ class KVNotificationStateStore:
             await self._save(state)
 
     async def _load(self) -> dict[str, Any]:
+        if self._state is not None:
+            return self._state
         raw = await self._store.get_json(NOTIFICATION_STATE_KEY)
         if raw is None:
-            return {"version": 1, "events": {}, "providers": {}}
+            self._state = {"version": 1, "events": {}, "providers": {}}
+            return self._state
         if not isinstance(raw, dict):
             raise StorageReadError("notification state root is invalid")
         events = raw.get("events", {})
         providers = raw.get("providers", {})
         if not isinstance(events, dict) or not isinstance(providers, dict):
             raise StorageReadError("notification state sections are invalid")
-        return {
+        self._state = {
             "version": 1,
             "events": events,
             "providers": providers,
         }
+        return self._state
 
     async def _save(self, state: dict[str, Any]) -> None:
         await self._store.put_json(NOTIFICATION_STATE_KEY, state)

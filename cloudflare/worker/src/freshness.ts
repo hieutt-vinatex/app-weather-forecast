@@ -21,8 +21,6 @@ const vietnamTime = new Intl.DateTimeFormat("en-GB", {
 });
 
 export function classifyFreshness(input: FreshnessInput): FreshnessStatus {
-  if (input.lastJobStatus === "running") return "updating";
-
   const generatedAt = new Date(input.generatedAt);
   if (Number.isNaN(generatedAt.getTime()) || Number.isNaN(input.now.getTime())) {
     return "stale";
@@ -38,6 +36,7 @@ export function classifyFreshness(input: FreshnessInput): FreshnessStatus {
   const staleLimit = active ? ACTIVE_STALE_MINUTES : IDLE_STALE_MINUTES;
 
   if (ageMinutes > staleLimit) return "stale";
+  if (input.lastJobStatus === "running") return "updating";
   if (input.lastJobStatus === "failed") return "delayed";
   if (ageMinutes > currentLimit) return "delayed";
   return "current";

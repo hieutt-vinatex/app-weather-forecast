@@ -3,7 +3,7 @@ import { useCloudOperation } from "./useCloudOperation";
 
 export interface SendAbsenceNotificationState {
   send: (adminToken: string) => Promise<void>;
-  status: OperationStatus | "idle";
+  status: OperationStatus | "idle" | "unknown";
   isSending: boolean;
   message: string | null;
   isError: boolean;

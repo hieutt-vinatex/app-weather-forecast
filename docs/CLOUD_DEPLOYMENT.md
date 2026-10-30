@@ -8,6 +8,8 @@ scheduler hoặc máy cá nhân chạy liên tục:
 - GitHub Actions chạy job đồng bộ dữ liệu hữu hạn và gửi Telegram.
 - Trình duyệt polling snapshot bằng ETag; lịch sử 30/60/90 ngày vẫn xem được khi
   job hiện tại đang chậm hoặc lỗi.
+- Manifest giữ con trỏ tới bản xuất bản trước; Worker tự đọc lui bản này nếu KV
+  đang lan truyền manifest mới nhanh hơn snapshot tương ứng.
 
 Mục tiêu là 0 đồng cho dự án cá nhân quy mô nhỏ. Hạn mức miễn phí có thể thay đổi;
 phần [Giám sát chi phí](#10-giám-sát-chi-phí-0) nêu các điểm cần theo dõi.
@@ -192,6 +194,12 @@ Trên URL Vercel preview:
    `Đã xếp hàng → Đang chạy trên cloud → Đã hoàn tất`;
 7. tải lại trang và xác nhận ô khóa trống; khóa không xuất hiện trong Local Storage,
    Session Storage hoặc URL request.
+
+Worker chỉ cho một thao tác cùng loại hoạt động trong mỗi isolate và kiểm tra
+thêm record/lock trong KV. Tác vụ queued/running không cập nhật quá 30 phút được
+đánh dấu thất bại và giải phóng ở yêu cầu quản trị kế tiếp. KV không cung cấp
+compare-and-set toàn cục, vì vậy không nên gửi đồng thời thao tác quản trị từ
+nhiều trình duyệt; workflow concurrency vẫn là lớp chặn cuối trước khi job chạy.
 
 Giữ `NOTIFICATION_DRY_RUN=true`, sau đó mở **Actions → Cloud Telegram
 notification → Run workflow** với `mode=scheduled`. Kiểm tra log đánh giá đúng kỳ

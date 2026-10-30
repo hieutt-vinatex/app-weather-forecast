@@ -3,7 +3,7 @@ import { useCloudOperation } from "./useCloudOperation";
 
 export interface ManualRefreshState {
   refresh: (adminToken: string) => Promise<void>;
-  status: OperationStatus | "idle";
+  status: OperationStatus | "idle" | "unknown";
   isRefreshing: boolean;
   message: string | null;
   isError: boolean;

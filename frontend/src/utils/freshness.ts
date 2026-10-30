@@ -17,6 +17,14 @@ export interface PollingContext {
   idlePollMs?: number;
 }
 
+export interface EffectiveFreshnessInput {
+  serverStatus: FreshnessStatus;
+  generatedAt: string;
+  now?: Date;
+  online: boolean;
+  requestFailed?: boolean;
+}
+
 const ACTIVE_START = 17 * 60 + 45;
 const ACTIVE_END = 19 * 60;
 
@@ -42,6 +50,30 @@ export function vietnamLocalTime(now = new Date()): string {
 
 export function freshnessLabel(status: FreshnessStatus): string {
   return FRESHNESS_LABELS[status];
+}
+
+export function effectiveFreshnessStatus(
+  input: EffectiveFreshnessInput,
+): FreshnessStatus {
+  if (!input.online) return "offline";
+  const now = input.now ?? new Date();
+  const generatedAt = new Date(input.generatedAt);
+  if (Number.isNaN(now.getTime()) || Number.isNaN(generatedAt.getTime())) {
+    return "stale";
+  }
+  const ageMinutes = Math.max(
+    0,
+    (now.getTime() - generatedAt.getTime()) / 60_000,
+  );
+  const localMinutes = parseLocalTime(vietnamLocalTime(now));
+  const active =
+    localMinutes !== null &&
+    localMinutes >= ACTIVE_START &&
+    localMinutes <= ACTIVE_END;
+  const staleLimit = active ? 20 : 48 * 60;
+  if (ageMinutes > staleLimit) return "stale";
+  if (input.requestFailed && input.serverStatus === "current") return "delayed";
+  return input.serverStatus;
 }
 
 function parseLocalTime(value: string): number | null {

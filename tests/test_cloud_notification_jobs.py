@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import asyncio
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -49,6 +50,13 @@ class MemoryStore:
 
     async def list_keys(self, prefix: str = "") -> list[str]:
         return sorted(key for key in self.values if key.startswith(prefix))
+
+
+class StaleNotificationReadStore(MemoryStore):
+    async def get_json(self, key: str) -> Any | None:
+        if key == "notification-state:v1":
+            return {"version": 1, "events": {}, "providers": {}}
+        return await super().get_json(key)
 
 
 class FakeDispatcher:
@@ -162,6 +170,20 @@ async def test_scheduled_notification_skips_recorded_target(monkeypatch):
     assert dispatcher.sent == []
 
 
+async def test_notification_state_keeps_prior_ack_despite_stale_kv_read():
+    store = StaleNotificationReadStore()
+    state = KVNotificationStateStore(store)
+
+    await state.mark_sent(EVENT_KEY, "telegram:a", fixed_clock())
+    await state.mark_sent(EVENT_KEY, "telegram:b", fixed_clock())
+
+    persisted = store.values["notification-state:v1"]
+    assert set(persisted["events"][EVENT_KEY]["targets"]) == {
+        "telegram:a",
+        "telegram:b",
+    }
+
+
 async def test_partial_failure_retries_only_failed_target(monkeypatch):
     store = MemoryStore()
     seed_snapshot(store)
@@ -247,6 +269,43 @@ async def test_manual_notification_allows_explicit_repeats(monkeypatch):
 
     assert first.status == second.status == "delivered"
     assert len(dispatcher.sent) == 2
+
+
+async def test_cancelled_manual_notification_persists_timeout_failure(monkeypatch):
+    store = MemoryStore()
+    seed_snapshot(store)
+    entered = asyncio.Event()
+    dispatcher = FakeDispatcher([target("a")])
+
+    async def never_finishes(target_arg, message):
+        del target_arg, message
+        entered.set()
+        await asyncio.Event().wait()
+
+    dispatcher.send = never_finishes
+    monkeypatch.setattr(
+        "app.cloud.notification_jobs._build_dispatcher",
+        lambda settings, state_store: dispatcher,
+    )
+    request_id = "123e4567-e89b-12d3-a456-426614174009"
+    task = asyncio.create_task(
+        run_manual_notification(
+            make_settings(notification_dry_run=False),
+            store,
+            request_id,
+            clock=fixed_clock,
+        )
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert (await store.get_json(f"operation:v1:{request_id}"))["status"] == "failed"
+    job = await store.get_json("job-status:v1:telegram")
+    assert job["status"] == "failed"
+    assert job["reason"] == "job_timeout"
 
 
 async def test_manual_exception_uses_injected_clock_for_failed_operation(monkeypatch):

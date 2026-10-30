@@ -87,6 +87,15 @@ class OperationRecord(CamelModel):
     message: str | None = None
 
 
+class PreviousPublication(CamelModel):
+    version: str
+    generated_at: datetime
+    snapshot_keys: dict[int, str]
+    source_reference_date: date | None
+    complete: bool
+    last_job: JobRecord
+
+
 class PublicationManifest(CamelModel):
     schema_version: int = 1
     version: str
@@ -96,6 +105,7 @@ class PublicationManifest(CamelModel):
     source_reference_date: date | None
     complete: bool
     last_job: JobRecord
+    previous_publication: PreviousPublication | None = None
 
 
 def history_key(version: str) -> str:

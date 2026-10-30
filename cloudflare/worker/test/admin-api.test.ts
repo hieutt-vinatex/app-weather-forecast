@@ -69,6 +69,29 @@ function adminRequest(
 }
 
 describe("admin operation API", () => {
+  it("allows browser POST preflight and exposes operational response headers", async () => {
+    const response = await handleRequest(
+      new Request("https://api.example/api/gdb/refresh", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://app.example",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "X-Notification-Token",
+        },
+      }),
+      makeEnv(new FakeKV()),
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+    expect(response.headers.get("Access-Control-Allow-Headers")).toContain(
+      "X-Notification-Token",
+    );
+    expect(response.headers.get("Access-Control-Expose-Headers")).toContain(
+      "Retry-After",
+    );
+  });
+
   it("rejects wrong token and origin before KV or GitHub side effects", async () => {
     const kv = new FakeKV();
     const githubFetch = vi.fn<typeof fetch>(async () =>
@@ -166,6 +189,51 @@ describe("admin operation API", () => {
     expect(second.status).toBe(429);
     expect(second.headers.get("Retry-After")).toBe("60");
     expect(githubFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits only one of two concurrent same-kind requests", async () => {
+    const kv = new FakeKV();
+    const githubFetch = vi.fn<typeof fetch>(async () =>
+      new Response(null, { status: 204 }),
+    );
+    const workerEnv = makeEnv(kv, githubFetch);
+
+    const responses = await Promise.all([
+      handleRequest(adminRequest("/api/gdb/refresh"), workerEnv),
+      handleRequest(adminRequest("/api/gdb/refresh"), workerEnv),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      202, 429,
+    ]);
+    expect(githubFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers an abandoned queued operation before admitting a replacement", async () => {
+    const kv = new FakeKV();
+    const abandonedId = "123e4567-e89b-42d3-a456-426614174099";
+    kv.values.set("operation-lock:v1:data_refresh", {
+      requestId: abandonedId,
+      createdAt: "2026-10-29T10:00:00Z",
+    });
+    kv.values.set(`operation:v1:${abandonedId}`, {
+      requestId: abandonedId,
+      kind: "data_refresh",
+      status: "queued",
+      createdAt: "2026-10-29T10:00:00Z",
+      updatedAt: "2026-10-29T10:00:00Z",
+      message: "Đang chờ",
+    });
+    const response = await handleRequest(
+      adminRequest("/api/gdb/refresh"),
+      makeEnv(kv),
+      new Date("2026-10-29T11:00:00Z"),
+    );
+
+    expect(response.status).toBe(202);
+    expect(kv.values.get(`operation:v1:${abandonedId}`)).toMatchObject({
+      status: "failed",
+    });
   });
 
   it("removes queued state and returns a safe 502 on GitHub failure", async () => {

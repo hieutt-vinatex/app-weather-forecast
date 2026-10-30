@@ -137,6 +137,23 @@ async def test_successful_publish_writes_all_ranges_before_manifest(
         assert await store.get_json(key) is not None
 
 
+async def test_new_manifest_retains_previous_publication_pointer(
+    outcomes, context, job
+):
+    store = MemoryStore()
+    publisher = SnapshotPublisher(store)
+    first = await publisher.publish(outcomes, context, job)
+    second = await publisher.publish(
+        outcomes,
+        replace(context, fetched_at=context.fetched_at + timedelta(minutes=1)),
+        job,
+    )
+
+    assert second.previous_publication is not None
+    assert second.previous_publication.version == first.version
+    assert second.previous_publication.snapshot_keys == first.snapshot_keys
+
+
 async def test_oversized_payload_fails_before_any_versioned_write(
     outcomes, context, job
 ):

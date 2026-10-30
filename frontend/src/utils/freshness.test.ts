@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pollIntervalMs } from "./freshness";
+import { effectiveFreshnessStatus, pollIntervalMs } from "./freshness";
 
 describe("pollIntervalMs", () => {
   it("uses active and idle intervals in Vietnam time", () => {
@@ -31,5 +31,29 @@ describe("pollIntervalMs", () => {
     expect(
       pollIntervalMs({ localTime: "19:01", visible: true, online: true }),
     ).toBe(300_000);
+  });
+});
+
+describe("effectiveFreshnessStatus", () => {
+  it("ages retained data locally when requests stop succeeding", () => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "current",
+        generatedAt: "2026-10-27T10:00:00Z",
+        now: new Date("2026-10-30T10:00:00Z"),
+        online: true,
+      }),
+    ).toBe("stale");
+  });
+
+  it("reports offline before server freshness", () => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "current",
+        generatedAt: "2026-10-30T09:59:00Z",
+        now: new Date("2026-10-30T10:00:00Z"),
+        online: false,
+      }),
+    ).toBe("offline");
   });
 });

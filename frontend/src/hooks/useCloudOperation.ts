@@ -8,21 +8,28 @@ import {
 } from "../api/client";
 import { config } from "../config";
 import type { OperationStatus } from "../types/gdb";
+import { usePageActivity } from "./usePageActivity";
 
 export interface CloudOperationState {
   start: (adminToken: string) => Promise<void>;
-  status: OperationStatus | "idle";
+  status: OperationStatus | "idle" | "unknown";
   isRunning: boolean;
   isError: boolean;
   message: string | null;
 }
 
 export function useCloudOperation(kind: CloudOperation): CloudOperationState {
-  const [status, setStatus] = useState<OperationStatus | "idle">("idle");
+  const [status, setStatus] = useState<OperationStatus | "idle" | "unknown">("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
   const activeRef = useRef(false);
   const mountedRef = useRef(true);
+  const activity = usePageActivity();
+  const activityRef = useRef(activity);
+
+  useEffect(() => {
+    activityRef.current = activity;
+  }, [activity]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -45,7 +52,24 @@ export function useCloudOperation(kind: CloudOperation): CloudOperationState {
         const deadline = Date.now() + config.operationTimeoutMs;
         while (Date.now() < deadline) {
           await wait(config.operationPollMs);
-          const operation = await fetchOperation(accepted.requestId, adminToken);
+          if (!activityRef.current.visible || !activityRef.current.online) {
+            continue;
+          }
+          let operation;
+          try {
+            operation = await fetchOperation(accepted.requestId, adminToken);
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              (error.status === 401 || error.status === 403)
+            ) {
+              throw error;
+            }
+            if (mountedRef.current) {
+              setMessage("Tạm thời chưa đọc được trạng thái; đang thử lại.");
+            }
+            continue;
+          }
           if (!mountedRef.current) return;
           setStatus(operation.status);
           setMessage(operation.message);
@@ -56,9 +80,9 @@ export function useCloudOperation(kind: CloudOperation): CloudOperationState {
           }
         }
         if (mountedRef.current) {
-          setStatus("failed");
+          setStatus("unknown");
           setIsError(true);
-          setMessage("Tác vụ cloud quá thời gian chờ 15 phút.");
+          setMessage("Chưa xác nhận được kết quả tác vụ cloud trong thời gian chờ.");
         }
       } catch (error) {
         if (!mountedRef.current) return;

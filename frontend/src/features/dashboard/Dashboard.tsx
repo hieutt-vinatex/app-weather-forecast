@@ -22,7 +22,7 @@ import { FrequencyBarChart } from "../../components/charts/FrequencyBarChart";
 import { FrequencyHeatmap } from "../../components/charts/FrequencyHeatmap";
 import { FrequencyTrendChart } from "../../components/charts/FrequencyTrendChart";
 import { SectionCard } from "../../components/ui/Card";
-import { freshnessLabel } from "../../utils/freshness";
+import { effectiveFreshnessStatus, freshnessLabel } from "../../utils/freshness";
 import { DashboardHeader } from "./DashboardHeader";
 
 export function Dashboard(): JSX.Element {
@@ -34,9 +34,16 @@ export function Dashboard(): JSX.Element {
   const query = useGdbSnapshot(days);
 
   const data = query.data;
-  const freshness = activity.online
-    ? (data?.meta.freshnessStatus ?? "updating")
-    : "offline";
+  const freshness = data
+    ? effectiveFreshnessStatus({
+        serverStatus: data.meta.freshnessStatus,
+        generatedAt: data.meta.generatedAt,
+        online: activity.online,
+        requestFailed: query.isError,
+      })
+    : activity.online
+      ? "updating"
+      : "offline";
 
   const statistics = data
     ? prizeScope === "all"

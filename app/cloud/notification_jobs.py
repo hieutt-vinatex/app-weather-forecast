@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -63,6 +64,19 @@ async def run_scheduled_notification(
     try:
         await dispatcher.start()
         result = await _run_scheduled(settings, store, state, dispatcher, now)
+    except asyncio.CancelledError:
+        await _persist_job(
+            store,
+            JobRecord(
+                kind="telegram",
+                mode="scheduled",
+                status="failed",
+                started_at=now,
+                finished_at=_now(settings, clock),
+                reason="job_timeout",
+            ),
+        )
+        raise
     except Exception as exc:
         await _persist_job(
             store,
@@ -137,6 +151,17 @@ async def run_manual_notification(
     try:
         await dispatcher.start()
         result = await _run_manual(settings, store, dispatcher, now)
+    except asyncio.CancelledError:
+        await _persist_manual_failure(
+            settings,
+            store,
+            normalized_request_id,
+            created_at,
+            now,
+            _now(settings, clock),
+            TimeoutError("notification job timed out"),
+        )
+        raise
     except Exception as exc:
         await _persist_manual_failure(
             settings,
@@ -423,6 +448,8 @@ async def _persist_manual_failure(
 
 
 def _safe_reason(exc: Exception) -> str:
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "job_timeout"
     if isinstance(exc, (NotificationDataError, StorageReadError)):
         return "invalid_snapshot"
     if exc.__class__.__module__.startswith("app.cloud"):

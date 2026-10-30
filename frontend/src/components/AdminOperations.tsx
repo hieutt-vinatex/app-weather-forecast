@@ -7,11 +7,12 @@ import { classNames } from "../utils/format";
 import { RefreshIcon } from "./Icons";
 import { Card } from "./ui/Card";
 
-const OPERATION_LABELS: Record<OperationStatus, string> = {
+const OPERATION_LABELS: Record<OperationStatus | "unknown", string> = {
   queued: "Đã xếp hàng",
   running: "Đang chạy trên cloud",
   succeeded: "Đã hoàn tất",
   failed: "Thất bại",
+  unknown: "Chưa rõ kết quả",
 };
 
 export function AdminOperations(): JSX.Element {
@@ -92,7 +93,7 @@ function OperationControl({
   buttonLabel: string;
   disabled: boolean;
   running: boolean;
-  status: OperationStatus | "idle";
+  status: OperationStatus | "idle" | "unknown";
   message: string | null;
   isError: boolean;
   onClick: () => void;

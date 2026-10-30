@@ -15,6 +15,16 @@ export interface PublicationManifest {
   sourceReferenceDate: string | null;
   complete: boolean;
   lastJob: JobRecord;
+  previousPublication?: PreviousPublication;
+}
+
+export interface PreviousPublication {
+  version: string;
+  generatedAt: string;
+  snapshotKeys: Record<string, string>;
+  sourceReferenceDate: string | null;
+  complete: boolean;
+  lastJob: JobRecord;
 }
 
 export interface SnapshotMeta {
@@ -58,6 +68,7 @@ export interface Env {
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   OPERATION_TTL_SECONDS?: string;
+  OPERATION_ACTIVE_SECONDS?: string;
   ADMIN_COOLDOWN_SECONDS?: string;
   GITHUB_FETCH?: typeof fetch;
 }

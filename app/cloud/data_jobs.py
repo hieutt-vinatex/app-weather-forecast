@@ -86,12 +86,28 @@ async def run_data_job(
             ),
         )
 
-    if mode == "full":
-        result = await full_sync(settings, store, clock=clock)
-    elif mode == "incremental":
-        result = await incremental_sync(settings, store, clock=clock)
-    else:
-        raise ValueError("mode must be full or incremental")
+    try:
+        if mode == "full":
+            result = await full_sync(settings, store, clock=clock)
+        elif mode == "incremental":
+            result = await incremental_sync(settings, store, clock=clock)
+        else:
+            raise ValueError("mode must be full or incremental")
+    except asyncio.CancelledError:
+        if normalized_request_id is not None:
+            await _persist_operation(
+                settings,
+                store,
+                OperationRecord(
+                    request_id=normalized_request_id,
+                    kind="data_refresh",
+                    status="failed",
+                    created_at=created_at,
+                    updated_at=_now(settings, clock),
+                    message="Tác vụ cập nhật dữ liệu đã quá thời gian xử lý.",
+                ),
+            )
+        raise
 
     if normalized_request_id is not None:
         succeeded = result.status in {"succeeded", "no_change"}
@@ -127,14 +143,20 @@ async def _sync(
     )
     await _persist_job(store, running)
     try:
+        publisher = _publisher(settings, store)
+        active = await publisher.load_active_history()
         if mode == "full":
-            outcomes = await _full_outcomes(settings, started_at.date())
+            refreshed = await _full_outcomes(settings, started_at.date())
+            if not any(item.ok and item.result_count > 0 for item in refreshed):
+                raise InvalidSourceDataError("no valid draw records")
+            outcomes = _merge_preserving_quality(active, refreshed)
         else:
-            publisher = _publisher(settings, store)
-            active = await publisher.load_active_history()
             if not active:
                 mode = "full"
-                outcomes = await _full_outcomes(settings, started_at.date())
+                refreshed = await _full_outcomes(settings, started_at.date())
+                if not any(item.ok and item.result_count > 0 for item in refreshed):
+                    raise InvalidSourceDataError("no valid draw records")
+                outcomes = refreshed
             else:
                 outcomes = await _incremental_outcomes(
                     settings, active, started_at.date()
@@ -152,9 +174,7 @@ async def _sync(
             record_count=len(outcomes),
         )
         context = _build_context(settings, finished_at)
-        manifest = await _publisher(settings, store).publish(
-            outcomes, context, completed_job
-        )
+        manifest = await publisher.publish(outcomes, context, completed_job)
         terminal_job = manifest.last_job
         await _persist_job(store, terminal_job)
         return DataJobResult(
@@ -164,6 +184,17 @@ async def _sync(
             record_count=len(outcomes),
         )
     except asyncio.CancelledError:
+        await _persist_job(
+            store,
+            JobRecord(
+                kind="data",
+                mode=mode,
+                status="failed",
+                started_at=started_at,
+                finished_at=_now(settings, clock),
+                reason="job_timeout",
+            ),
+        )
         raise
     except Exception as exc:
         failed_job = JobRecord(
@@ -207,9 +238,34 @@ async def _incremental_outcomes(
         raise InvalidSourceDataError("current draw is invalid")
     for item in refreshed:
         if item.ok and item.result_count > 0:
-            by_day[item.day] = item
+            previous = by_day.get(item.day)
+            by_day[item.day] = _prefer_higher_quality(previous, item)
     wanted = date_range(90, settings.tzinfo, end=today)
     return [by_day[day] for day in wanted if day in by_day]
+
+
+def _merge_preserving_quality(
+    active: Sequence[DayOutcome], refreshed: Sequence[DayOutcome]
+) -> list[DayOutcome]:
+    active_by_day = {item.day: item for item in active}
+    return [
+        _prefer_higher_quality(active_by_day.get(item.day), item)
+        for item in refreshed
+    ]
+
+
+def _prefer_higher_quality(
+    previous: DayOutcome | None, refreshed: DayOutcome
+) -> DayOutcome:
+    if previous is None or not previous.ok or previous.result_count == 0:
+        return refreshed
+    if not refreshed.ok or refreshed.result_count == 0:
+        return previous
+    if previous.complete and not refreshed.complete:
+        return previous
+    if previous.result_count > refreshed.result_count:
+        return previous
+    return refreshed
 
 
 async def _fetch_outcomes(

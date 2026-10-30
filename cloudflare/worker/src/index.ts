@@ -3,6 +3,7 @@ import type {
   Env,
   JobRecord,
   OperationRecord,
+  PreviousPublication,
   PublicationManifest,
   SnapshotResponse,
 } from "./contracts";
@@ -16,6 +17,7 @@ import {
 const MANIFEST_KEY = "manifest:v1";
 const DATA_JOB_KEY = "job-status:v1:data";
 const SUPPORTED_DAYS = new Set([30, 60, 90]);
+const localAdmissions = new WeakMap<KVNamespace, Set<string>>();
 
 export async function handleRequest(
   request: Request,
@@ -99,17 +101,30 @@ async function queueOperation(
     60,
     604_800,
   );
+  const operationActiveSeconds = boundedInteger(
+    env.OPERATION_ACTIVE_SECONDS,
+    1_800,
+    300,
+    7_200,
+  );
   const lockKey = `operation-lock:v1:${kind}`;
+  const admissions = admissionSet(env.SNAPSHOTS);
+  if (admissions.has(kind)) {
+    return operationBusyResponse(request, env, cooldownSeconds);
+  }
+  admissions.add(kind);
   try {
-    if ((await getJson(env, lockKey)) !== null) {
-      const response = jsonResponse(
-        { error: "Một yêu cầu cùng loại đang được xử lý" },
-        429,
-        request,
+    if (
+      await hasActiveOperation(
         env,
-      );
-      response.headers.set("Retry-After", String(cooldownSeconds));
-      return response;
+        lockKey,
+        now,
+        cooldownSeconds,
+        operationActiveSeconds,
+        operationTtl,
+      )
+    ) {
+      return operationBusyResponse(request, env, cooldownSeconds);
     }
 
     const requestId = crypto.randomUUID();
@@ -126,7 +141,7 @@ async function queueOperation(
     await env.SNAPSHOTS.put(
       lockKey,
       JSON.stringify({ requestId, createdAt: timestamp }),
-      { expirationTtl: cooldownSeconds },
+      { expirationTtl: operationTtl },
     );
     try {
       await env.SNAPSHOTS.put(operationKey, JSON.stringify(operation), {
@@ -158,7 +173,89 @@ async function queueOperation(
       request,
       env,
     );
+  } finally {
+    admissions.delete(kind);
   }
+}
+
+function admissionSet(namespace: KVNamespace): Set<string> {
+  let admissions = localAdmissions.get(namespace);
+  if (admissions === undefined) {
+    admissions = new Set<string>();
+    localAdmissions.set(namespace, admissions);
+  }
+  return admissions;
+}
+
+async function hasActiveOperation(
+  env: Env,
+  lockKey: string,
+  now: Date,
+  cooldownSeconds: number,
+  activeSeconds: number,
+  operationTtl: number,
+): Promise<boolean> {
+  const rawLock = await getJson(env, lockKey);
+  if (!isObject(rawLock)) return rawLock !== null;
+  const requestId = rawLock.requestId;
+  if (typeof requestId === "string" && isUuid(requestId)) {
+    const operation = parseOperation(
+      await getJson(env, `operation:v1:${requestId}`),
+      requestId,
+    );
+    if (operation?.status === "queued" || operation?.status === "running") {
+      const updatedAt = new Date(operation.updatedAt).getTime();
+      if (
+        Number.isFinite(updatedAt) &&
+        now.getTime() - updatedAt <= activeSeconds * 1_000
+      ) {
+        return true;
+      }
+      await env.SNAPSHOTS.put(
+        `operation:v1:${requestId}`,
+        JSON.stringify({
+          ...operation,
+          status: "failed",
+          updatedAt: now.toISOString(),
+          message: "Tác vụ cloud đã quá thời gian xử lý.",
+        }),
+        { expirationTtl: operationTtl },
+      );
+      await env.SNAPSHOTS.delete(lockKey);
+      return false;
+    }
+    if (operation?.status === "succeeded" || operation?.status === "failed") {
+      await env.SNAPSHOTS.delete(lockKey);
+      return false;
+    }
+  }
+  const createdAt =
+    typeof rawLock.createdAt === "string"
+      ? new Date(rawLock.createdAt).getTime()
+      : Number.NaN;
+  if (
+    Number.isFinite(createdAt) &&
+    now.getTime() - createdAt < cooldownSeconds * 1_000
+  ) {
+    return true;
+  }
+  await env.SNAPSHOTS.delete(lockKey);
+  return false;
+}
+
+function operationBusyResponse(
+  request: Request,
+  env: Env,
+  retryAfter: number,
+): Response {
+  const response = jsonResponse(
+    { error: "Một yêu cầu cùng loại đang được xử lý" },
+    429,
+    request,
+    env,
+  );
+  response.headers.set("Retry-After", String(retryAfter));
+  return response;
 }
 
 async function operationResponse(
@@ -212,36 +309,70 @@ async function snapshotResponse(
   try {
     const manifest = parseManifest(await getJson(env, MANIFEST_KEY));
     const etag = `"${manifest.version}"`;
-    if (request.headers.get("If-None-Match") === etag) {
+    const rawJob = await getJson(env, DATA_JOB_KEY);
+    const job = parseJob(rawJob) ?? manifest.lastJob;
+    const freshnessStatus = classifyFreshness({
+      now,
+      generatedAt: manifest.generatedAt,
+      lastJobStatus: job.status,
+    });
+    if (
+      request.headers.get("If-None-Match") === etag &&
+      freshnessStatus === "current" &&
+      job.status === "succeeded"
+    ) {
       const headers = responseHeaders(request, env);
       headers.set("ETag", etag);
       headers.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
       return new Response(null, { status: 304, headers });
     }
 
-    const rawJob = await getJson(env, DATA_JOB_KEY);
-    const job = parseJob(rawJob) ?? manifest.lastJob;
     const key = manifest.snapshotKeys[String(days)];
     if (!key) throw new StoredDataError();
-    const snapshot = parseSnapshot(await getJson(env, key), days);
-    const freshnessStatus = classifyFreshness({
+    let selectedVersion = manifest.version;
+    let selectedGeneratedAt = manifest.generatedAt;
+    let selectedJob = job;
+    let snapshot: SnapshotResponse;
+    try {
+      snapshot = parseSnapshot(await getJson(env, key), days);
+    } catch {
+      const previous = manifest.previousPublication;
+      const previousKey = previous?.snapshotKeys[String(days)];
+      if (!previous || !previousKey) throw new StoredDataError();
+      snapshot = parseSnapshot(await getJson(env, previousKey), days);
+      selectedVersion = previous.version;
+      selectedGeneratedAt = previous.generatedAt;
+      selectedJob = previous.lastJob;
+    }
+    const selectedFreshness = classifyFreshness({
       now,
-      generatedAt: manifest.generatedAt,
-      lastJobStatus: job.status,
+      generatedAt: selectedGeneratedAt,
+      lastJobStatus: selectedJob.status,
     });
+    const selectedEtag = `"${selectedVersion}"`;
+    if (
+      request.headers.get("If-None-Match") === selectedEtag &&
+      selectedFreshness === "current" &&
+      selectedJob.status === "succeeded"
+    ) {
+      const headers = responseHeaders(request, env);
+      headers.set("ETag", selectedEtag);
+      headers.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
+      return new Response(null, { status: 304, headers });
+    }
     const body: SnapshotResponse = {
       ...snapshot,
       meta: {
         ...snapshot.meta,
-        generatedAt: manifest.generatedAt,
-        freshnessStatus,
-        lastJobStatus: job.status,
+        generatedAt: selectedGeneratedAt,
+        freshnessStatus: selectedFreshness,
+        lastJobStatus: selectedJob.status,
       },
     };
     const headers = responseHeaders(request, env);
     headers.set("Content-Type", "application/json; charset=utf-8");
     headers.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
-    headers.set("ETag", etag);
+    headers.set("ETag", selectedEtag);
     return new Response(JSON.stringify(body), { status: 200, headers });
   } catch {
     return jsonResponse(
@@ -319,11 +450,48 @@ function parseManifest(value: unknown): PublicationManifest {
     if (typeof key !== "string" || key.length === 0) throw new StoredDataError();
     snapshotKeys[String(days)] = key;
   }
+  let previousPublication: PreviousPublication | undefined;
+  if (value.previousPublication !== undefined && value.previousPublication !== null) {
+    previousPublication = parsePreviousPublication(value.previousPublication);
+  }
   return {
     schemaVersion: 1,
     version: value.version,
     generatedAt: value.generatedAt,
     historyKey: value.historyKey,
+    snapshotKeys,
+    sourceReferenceDate: value.sourceReferenceDate as string | null,
+    complete: value.complete,
+    lastJob,
+    previousPublication,
+  };
+}
+
+function parsePreviousPublication(value: unknown): PreviousPublication {
+  if (
+    !isObject(value) ||
+    typeof value.version !== "string" ||
+    !/^[A-Za-z0-9_.:-]+$/.test(value.version) ||
+    typeof value.generatedAt !== "string" ||
+    Number.isNaN(new Date(value.generatedAt).getTime()) ||
+    !isObject(value.snapshotKeys) ||
+    (value.sourceReferenceDate !== null &&
+      typeof value.sourceReferenceDate !== "string") ||
+    typeof value.complete !== "boolean"
+  ) {
+    throw new StoredDataError();
+  }
+  const lastJob = parseJob(value.lastJob);
+  if (lastJob === null) throw new StoredDataError();
+  const snapshotKeys: Record<string, string> = {};
+  for (const days of [30, 60, 90]) {
+    const key = value.snapshotKeys[String(days)];
+    if (typeof key !== "string" || key.length === 0) throw new StoredDataError();
+    snapshotKeys[String(days)] = key;
+  }
+  return {
+    version: value.version,
+    generatedAt: value.generatedAt,
     snapshotKeys,
     sourceReferenceDate: value.sourceReferenceDate as string | null,
     complete: value.complete,
@@ -408,11 +576,12 @@ function responseHeaders(request: Request, env: Env): Headers {
   const allowed = allowedOrigins(env);
   if (origin && allowed.has(origin)) {
     headers.set("Access-Control-Allow-Origin", origin);
-    headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     headers.set(
       "Access-Control-Allow-Headers",
       `Content-Type, If-None-Match, ${ADMIN_TOKEN_HEADER}`,
     );
+    headers.set("Access-Control-Expose-Headers", "ETag, Retry-After");
   }
   return headers;
 }

@@ -119,6 +119,23 @@ describe("public Worker API", () => {
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe(
       "https://app.example",
     );
+    expect(response.headers.get("Access-Control-Expose-Headers")).toContain(
+      "ETag",
+    );
+  });
+
+  it("recomputes freshness instead of returning 304 after job failure", async () => {
+    const response = await handleRequest(
+      new Request("https://api.example/api/gdb?days=30", {
+        headers: { "If-None-Match": '"20261029T105500000000Z"' },
+      }),
+      env({ "job-status:v1:data": { status: "failed" } }),
+      now,
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, any>;
+    expect(body.meta.freshnessStatus).toBe("delayed");
   });
 
   it("returns 304 for the active ETag without reading a partial snapshot", async () => {
@@ -173,6 +190,49 @@ describe("public Worker API", () => {
     expect(mismatched.status).toBe(503);
     expect(unavailable.status).toBe(503);
     expect(await unavailable.text()).not.toContain("private storage detail");
+  });
+
+  it("serves the previous publication while a new KV snapshot is propagating", async () => {
+    const previousSnapshot = snapshot(30);
+    const response = await handleRequest(
+      new Request("https://api.example/api/gdb?days=30"),
+      env({
+        "manifest:v1": {
+          schemaVersion: 1,
+          version: "new-version",
+          generatedAt: "2026-10-29T10:59:00Z",
+          historyKey: "history:v1:new-version",
+          snapshotKeys: {
+            "30": "snapshot:v1:new-version:30",
+            "60": "snapshot:v1:new-version:60",
+            "90": "snapshot:v1:new-version:90",
+          },
+          sourceReferenceDate: "2026-10-29",
+          complete: true,
+          lastJob: { status: "succeeded" },
+          previousPublication: {
+            version: "old-version",
+            generatedAt: "2026-10-29T10:55:00Z",
+            snapshotKeys: {
+              "30": "snapshot:v1:old-version:30",
+              "60": "snapshot:v1:old-version:60",
+              "90": "snapshot:v1:old-version:90",
+            },
+            sourceReferenceDate: "2026-10-29",
+            complete: true,
+            lastJob: { status: "succeeded" },
+          },
+        },
+        "snapshot:v1:new-version:30": null,
+        "snapshot:v1:old-version:30": previousSnapshot,
+      }),
+      now,
+    );
+    const body = (await response.json()) as Record<string, any>;
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("ETag")).toBe('"old-version"');
+    expect(body.meta.generatedAt).toBe("2026-10-29T10:55:00Z");
   });
 
   it("reports only safe health metadata", async () => {

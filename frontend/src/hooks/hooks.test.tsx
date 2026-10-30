@@ -195,6 +195,58 @@ describe("useCloudOperation", () => {
     expect(result.current.isError).toBe(true);
     expect(result.current.message).toContain("không gửi được");
   });
+
+  it("retries a transient observation failure until the operation succeeds", async () => {
+    vi.useFakeTimers();
+    const requestId = "123e4567-e89b-42d3-a456-426614174002";
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              requestId,
+              status: "queued",
+              statusUrl: `/api/operations/${requestId}`,
+            }),
+            { status: 202, headers: { "Content-Type": "application/json" } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: "KV đang lan truyền" }), {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              requestId,
+              kind: "data_refresh",
+              status: "succeeded",
+              createdAt: "2026-10-29T11:00:00Z",
+              updatedAt: "2026-10-29T11:01:00Z",
+              message: "Đã cập nhật",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+    );
+    const { result } = renderHook(() => useCloudOperation("refresh"));
+
+    let pending: Promise<void>;
+    act(() => {
+      pending = result.current.start("admin-secret");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+      await pending!;
+    });
+
+    expect(result.current.status).toBe("succeeded");
+    expect(result.current.isError).toBe(false);
+  });
 });
 
 describe("useSendAbsenceNotification", () => {

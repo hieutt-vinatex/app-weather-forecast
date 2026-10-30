@@ -4,6 +4,9 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import asyncio
+import pytest
+
 from app.cloud.contracts import JobRecord, PublicationManifest
 from app.cloud.data_jobs import full_sync, incremental_sync, run_data_job
 from app.cloud.publisher import SnapshotPublisher
@@ -37,12 +40,14 @@ def fixed_clock() -> datetime:
     return datetime(2026, 10, 29, 11, 0, tzinfo=timezone.utc)
 
 
-def outcome_for(day: date, value: int, *, ok: bool = True) -> DayOutcome:
+def outcome_for(
+    day: date, value: int, *, ok: bool = True, complete: bool | None = None
+) -> DayOutcome:
     return DayOutcome(
         day=day,
         source_url=f"https://example.test/{day.isoformat()}",
         gdb=f"{value % 100:02d}" if ok else None,
-        complete=ok,
+        complete=ok if complete is None else complete,
         ok=ok,
         reason=None if ok else "parse_failure",
     )
@@ -118,6 +123,53 @@ async def test_incremental_sync_replaces_dates_without_duplicates(monkeypatch):
     assert dates[-1] == "2026-10-29"
 
 
+async def test_full_sync_preserves_known_good_days_when_upstream_degrades(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    await publish_initial(store, date(2026, 10, 28))
+
+    async def degraded_fetch(settings_arg, days):
+        del settings_arg
+        return [
+            outcome_for(day, 77, ok=day == days[-1])
+            for day in days
+        ]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", degraded_fetch)
+
+    result = await full_sync(settings, store, clock=fixed_clock)
+    history = await SnapshotPublisher(store).load_active_history()
+
+    assert result.status == "succeeded"
+    assert len(history) == 90
+    assert all(item.ok for item in history)
+    preserved = next(item for item in history if item.day == date(2026, 10, 28))
+    assert preserved.gdb == "89"
+
+
+async def test_incremental_sync_does_not_replace_complete_draw_with_partial(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    await publish_initial(store, date(2026, 10, 28))
+
+    async def partial_fetch(settings_arg, days):
+        del settings_arg
+        return [
+            outcome_for(days[0], 11, complete=False),
+            outcome_for(days[1], 12, complete=False),
+        ]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", partial_fetch)
+
+    result = await incremental_sync(settings, store, clock=fixed_clock)
+    history = await SnapshotPublisher(store).load_active_history()
+    yesterday = next(item for item in history if item.day == date(2026, 10, 28))
+
+    assert result.status == "succeeded"
+    assert yesterday.complete is True
+    assert yesterday.gdb == "89"
+
+
 async def test_malformed_current_draw_keeps_previous_manifest(monkeypatch):
     store = MemoryStore()
     settings = make_settings()
@@ -159,3 +211,36 @@ async def test_requested_operation_reaches_succeeded_with_ttl(monkeypatch):
     assert result.status == "succeeded"
     assert operation["status"] == "succeeded"
     assert store.ttls[operation_key] == 86400
+
+
+async def test_cancelled_data_job_persists_timeout_failure(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    entered = asyncio.Event()
+
+    async def never_finishes(settings_arg, days):
+        del settings_arg, days
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", never_finishes)
+    request_id = "123e4567-e89b-12d3-a456-426614174009"
+    task = asyncio.create_task(
+        run_data_job(
+            settings,
+            store,
+            mode="full",
+            request_id=request_id,
+            clock=fixed_clock,
+        )
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert (await store.get_json("job-status:v1:data"))["status"] == "failed"
+    assert (await store.get_json("job-status:v1:data"))["reason"] == "job_timeout"
+    operation = await store.get_json(f"operation:v1:{request_id}")
+    assert operation["status"] == "failed"
