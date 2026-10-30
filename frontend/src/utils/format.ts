@@ -20,6 +20,22 @@ export function formatClock(iso: string | null): string {
   return d.toLocaleTimeString("vi-VN", { hour12: false });
 }
 
+/** ISO datetime -> Vietnam-local `HH:MM DD/MM/YYYY`. */
+export function formatVietnamDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 /** Relative "x giây trước" style label from an ISO timestamp. */
 export function formatRelative(iso: string | null, now = Date.now()): string {
   if (!iso) return "chưa có";

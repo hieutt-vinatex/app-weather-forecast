@@ -1,16 +1,13 @@
-import { useMemo } from "react";
-
-import { config } from "../../config";
 import { useDaysParam } from "../../hooks/useDaysParam";
-import { useGdbRealtime } from "../../hooks/useGdbRealtime";
 import { useGdbSnapshot } from "../../hooks/useGdbSnapshot";
-import { useManualRefresh } from "../../hooks/useManualRefresh";
+import { usePageActivity } from "../../hooks/usePageActivity";
 import { usePrizeParam } from "../../hooks/usePrizeParam";
 import { formatPercent } from "../../utils/format";
 import { prizeLabel } from "../../utils/prizes";
 import { useTheme } from "../../utils/theme";
 
 import { PartialWarning, StaleWarning } from "../../components/Alerts";
+import { AdminOperations } from "../../components/AdminOperations";
 import { AbsenceMonitor } from "../../components/AbsenceMonitor";
 import { Disclaimer } from "../../components/Disclaimer";
 import { HistoryTable } from "../../components/HistoryTable";
@@ -25,6 +22,7 @@ import { FrequencyBarChart } from "../../components/charts/FrequencyBarChart";
 import { FrequencyHeatmap } from "../../components/charts/FrequencyHeatmap";
 import { FrequencyTrendChart } from "../../components/charts/FrequencyTrendChart";
 import { SectionCard } from "../../components/ui/Card";
+import { freshnessLabel } from "../../utils/freshness";
 import { DashboardHeader } from "./DashboardHeader";
 
 export function Dashboard(): JSX.Element {
@@ -32,21 +30,13 @@ export function Dashboard(): JSX.Element {
   const [prizeScope, setPrizeScope] = usePrizeParam();
   const { theme } = useTheme();
 
-  const realtime = useGdbRealtime(days);
-  const online = realtime.status === "online";
-  const query = useGdbSnapshot(days, online ? false : config.fallbackPollMs);
-  const manual = useManualRefresh();
+  const activity = usePageActivity();
+  const query = useGdbSnapshot(days);
 
   const data = query.data;
-  const realtimeHint = useMemo(() => {
-    if (!data) return "…";
-    if (data.meta.realtimeEnabled) return online ? "Trực tuyến" : realtime.status;
-    return "Tắt";
-  }, [data, online, realtime.status]);
-
-  const refreshDisabled =
-    manual.isRefreshing ||
-    (manual.cooldownUntil !== null && Date.now() < manual.cooldownUntil);
+  const freshness = activity.online
+    ? (data?.meta.freshnessStatus ?? "updating")
+    : "offline";
 
   const statistics = data
     ? prizeScope === "all"
@@ -68,15 +58,13 @@ export function Dashboard(): JSX.Element {
       <div className="mx-auto max-w-[1480px] space-y-4 px-3 py-4 sm:px-6 sm:py-6">
         <DashboardHeader
           meta={data?.meta}
-          status={realtime.status}
+          freshness={freshness}
+          sourceReferenceDate={latest?.date}
           days={days}
           onDaysChange={setDays}
-          onRefresh={manual.refresh}
-          isRefreshing={manual.isRefreshing}
-          refreshDisabled={refreshDisabled}
-          refreshMessage={manual.message}
-          refreshIsError={manual.isError}
         />
+
+        <AdminOperations />
 
         <main id="main">
           {query.isError && !data ? (
@@ -110,7 +98,7 @@ export function Dashboard(): JSX.Element {
                     </SectionCard>
                   ) : null}
 
-                  <KpiCards stats={statistics} realtimeHint={realtimeHint} />
+                  <KpiCards stats={statistics} statusHint={freshnessLabel(freshness)} />
 
                   <div className="grid gap-4 xl:grid-cols-2">
                     <SectionCard

@@ -87,42 +87,6 @@ export interface SnapshotResponse {
   meta: Meta;
 }
 
-export interface RefreshResponse {
-  triggered: boolean;
-  changed: boolean;
-  snapshotVersion: number;
-  message: string;
-}
-
-export interface NotificationCandidate {
-  number: string;
-  daysAbsent: number;
-  lastSeen: string;
-}
-
-export interface NotificationDeliveryResult {
-  channel: string;
-  target: string;
-  success: boolean;
-  providerId: string | null;
-  error: string | null;
-}
-
-export interface SendNotificationNowResponse {
-  status: "delivered" | "partial_failure" | "dry_run" | "waiting" | "not_configured";
-  success: boolean;
-  dryRun: boolean;
-  message: string;
-  checkedAt: string;
-  referenceDate: string | null;
-  minDays: number;
-  maxDays: number;
-  candidateCount: number;
-  candidates: NotificationCandidate[];
-  reason: string | null;
-  results: NotificationDeliveryResult[];
-}
-
 export type FreshnessStatus =
   | "current"
   | "updating"
@@ -147,16 +111,3 @@ export interface OperationRecord {
   updatedAt: string;
   message: string;
 }
-
-export interface HeartbeatEvent {
-  sentAt: string;
-  snapshotVersion: number;
-}
-
-/** Connection state for the SSE stream (text + icon, never color-only). */
-export type ConnectionStatus =
-  | "connecting"
-  | "online"
-  | "reconnecting"
-  | "offline"
-  | "stale";

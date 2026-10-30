@@ -7,10 +7,7 @@ import type { SnapshotResponse } from "../types/gdb";
 import { pollIntervalMs, vietnamLocalTime } from "../utils/freshness";
 import { usePageActivity } from "./usePageActivity";
 
-/**
- * REST snapshot query. Used for the initial load and as controlled fallback
- * polling when the SSE stream is not connected (`fallbackPollMs`).
- */
+/** REST snapshot query with visibility- and draw-window-aware polling. */
 export function useGdbSnapshot(
   days: RangeDays,
   migrationPollOverride?: number | false,

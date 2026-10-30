@@ -24,18 +24,27 @@ export function PartialWarning({ meta }: { meta: Meta }): JSX.Element | null {
 }
 
 export function StaleWarning({ meta }: { meta: Meta }): JSX.Element | null {
-  if (!meta.stale) return null;
+  if (meta.freshnessStatus !== "delayed" && meta.freshnessStatus !== "stale") {
+    return null;
+  }
+  const stale = meta.freshnessStatus === "stale";
   return (
     <div
       role="status"
-      className="flex items-start gap-2 rounded-xl2 border border-sky-300 bg-sky-50 dark:bg-sky-900/20 dark:border-sky-800 px-4 py-3 text-sm text-sky-800 dark:text-sky-200"
+      className={`flex items-start gap-2 rounded-xl2 border px-4 py-3 text-sm ${
+        stale
+          ? "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-200"
+          : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+      }`}
     >
       <InfoIcon className="mt-0.5 shrink-0" />
       <div>
-        <p className="font-medium">Đang hiển thị dữ liệu lưu tạm</p>
+        <p className="font-medium">
+          {stale ? "Dữ liệu đã cũ" : "Dữ liệu chậm cập nhật"}
+        </p>
         <p className="mt-0.5">
-          Nguồn tạm thời chưa phản hồi; hệ thống đang hiển thị dữ liệu gần nhất và sẽ
-          tự cập nhật khi có kết quả mới.
+          Hệ thống vẫn hiển thị đầy đủ snapshot và lịch sử gần nhất; dữ liệu sẽ tự
+          cập nhật khi tác vụ cloud hoàn tất.
         </p>
       </div>
     </div>

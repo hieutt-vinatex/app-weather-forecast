@@ -1,17 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { useGdbRealtime } from "./useGdbRealtime";
 import { useGdbSnapshot } from "./useGdbSnapshot";
 import { useCloudOperation } from "./useCloudOperation";
 import { useManualRefresh } from "./useManualRefresh";
 import { useSendAbsenceNotification } from "./useSendAbsenceNotification";
-import { snapshotQueryKey } from "../api/client";
-import { MockEventSource, installMockEventSource } from "../test/mockEventSource";
 import { makeSnapshot } from "../test/fixtures";
-import type { SnapshotResponse } from "../types/gdb";
 
 function makeWrapper() {
   const qc = new QueryClient({
@@ -23,49 +19,7 @@ function makeWrapper() {
   return { qc, wrapper };
 }
 
-describe("useGdbRealtime", () => {
-  beforeEach(() => installMockEventSource());
-  afterEach(() => vi.restoreAllMocks());
-
-  it("writes snapshot events into the query cache", async () => {
-    const { qc, wrapper } = makeWrapper();
-    renderHook(() => useGdbRealtime(30), { wrapper });
-    const es = MockEventSource.last();
-    act(() => {
-      es.emitOpen();
-      es.emit("snapshot", makeSnapshot(30, 1));
-    });
-    await waitFor(() => {
-      const cached = qc.getQueryData<SnapshotResponse>(snapshotQueryKey(30));
-      expect(cached?.meta.snapshotVersion).toBe(1);
-    });
-  });
-
-  it("closes the old stream when days changes and opens a new one", () => {
-    const { wrapper } = makeWrapper();
-    const { rerender } = renderHook(({ d }) => useGdbRealtime(d), {
-      wrapper,
-      initialProps: { d: 30 as 30 | 60 | 90 },
-    });
-    const first = MockEventSource.last();
-    expect(first.url).toContain("days=30");
-    rerender({ d: 60 });
-    expect(first.closed).toBe(true);
-    const second = MockEventSource.last();
-    expect(second.url).toContain("days=60");
-  });
-
-  it("ignores events for a different range", async () => {
-    const { qc, wrapper } = makeWrapper();
-    renderHook(() => useGdbRealtime(30), { wrapper });
-    const es = MockEventSource.last();
-    act(() => es.emit("update", makeSnapshot(60, 2)));
-    const cached = qc.getQueryData<SnapshotResponse>(snapshotQueryKey(30));
-    expect(cached).toBeUndefined();
-  });
-});
-
-describe("useGdbSnapshot fallback polling", () => {
+describe("useGdbSnapshot adaptive polling", () => {
   afterEach(() => vi.restoreAllMocks());
 
   function stubFetch() {
@@ -93,7 +47,7 @@ describe("useGdbSnapshot fallback polling", () => {
     });
   });
 
-  it("does not poll when fallback is disabled", async () => {
+  it("does not poll when an interval override is disabled", async () => {
     const fetchFn = stubFetch();
     const { qc, wrapper } = makeWrapper();
     const { unmount } = renderHook(() => useGdbSnapshot(30, false), { wrapper });
@@ -110,38 +64,19 @@ describe("useGdbSnapshot fallback polling", () => {
 });
 
 describe("useManualRefresh", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("handles 429 with cooldown and message", async () => {
-    const headers = new Headers({ "Retry-After": "5" });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({ ok: false, status: 429, headers })) as unknown as typeof fetch,
-    );
-    const { result } = renderHook(() => useManualRefresh());
-    await act(async () => {
-      await result.current.refresh();
-    });
-    expect(result.current.isError).toBe(true);
-    expect(result.current.cooldownUntil).not.toBeNull();
-    expect(result.current.message).toContain("chờ");
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("reports success on 200", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({ triggered: true, changed: true, snapshotVersion: 2, message: "ok" }),
-      })) as unknown as typeof fetch,
-    );
+  it("reports a wrong cloud admin token safely", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
     const { result } = renderHook(() => useManualRefresh());
     await act(async () => {
-      await result.current.refresh();
+      await result.current.refresh("wrong-token");
     });
-    expect(result.current.isError).toBe(false);
-    expect(result.current.message).toContain("Đã cập nhật");
+    expect(result.current.isError).toBe(true);
+    expect(result.current.message).toContain("Khóa quản trị không đúng");
   });
 });
 
@@ -151,7 +86,7 @@ describe("useCloudOperation", () => {
     vi.restoreAllMocks();
   });
 
-  it("polls a queued operation until success", async () => {
+  it("polls a queued operation through running until success", async () => {
     vi.useFakeTimers();
     const requestId = "123e4567-e89b-42d3-a456-426614174000";
     const fetchFn = vi
@@ -164,6 +99,19 @@ describe("useCloudOperation", () => {
             statusUrl: `/api/operations/${requestId}`,
           }),
           { status: 202, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requestId,
+            kind: "data_refresh",
+            status: "running",
+            createdAt: "2026-10-29T11:00:00Z",
+            updatedAt: "2026-10-29T11:00:30Z",
+            message: "Đang cập nhật dữ liệu",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       )
       .mockResolvedValueOnce(
@@ -188,66 +136,90 @@ describe("useCloudOperation", () => {
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(result.current.status).toBe("running");
+    expect(result.current.message).toContain("Đang cập nhật");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
       await pending!;
     });
 
     expect(result.current.status).toBe("succeeded");
     expect(result.current.message).toContain("Đã cập nhật");
   });
+
+  it("surfaces a terminal failed operation", async () => {
+    vi.useFakeTimers();
+    const requestId = "123e4567-e89b-42d3-a456-426614174001";
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              requestId,
+              status: "queued",
+              statusUrl: `/api/operations/${requestId}`,
+            }),
+            { status: 202, headers: { "Content-Type": "application/json" } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              requestId,
+              kind: "telegram_send",
+              status: "failed",
+              createdAt: "2026-10-29T11:00:00Z",
+              updatedAt: "2026-10-29T11:01:00Z",
+              message: "Telegram tạm thời không gửi được",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+    );
+    const { result } = renderHook(() => useCloudOperation("telegram"));
+
+    let pending: Promise<void>;
+    act(() => {
+      pending = result.current.start("admin-secret");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+      await pending!;
+    });
+
+    expect(result.current.status).toBe("failed");
+    expect(result.current.isError).toBe(true);
+    expect(result.current.message).toContain("không gửi được");
+  });
 });
 
 describe("useSendAbsenceNotification", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("sends the admin token and reports a successful immediate delivery", async () => {
-    const fetchFn = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        status: "delivered",
-        success: true,
-        dryRun: false,
-        message: "Đã gửi 3 số đang vắng 19–25 ngày.",
-        checkedAt: "2026-10-15T22:30:00+07:00",
-        referenceDate: "2026-10-15",
-        minDays: 19,
-        maxDays: 25,
-        candidateCount: 3,
-        candidates: [],
-        reason: null,
-        results: [],
-      }),
-    }));
-    vi.stubGlobal("fetch", fetchFn as unknown as typeof fetch);
-    const { result } = renderHook(() => useSendAbsenceNotification());
-
-    await act(async () => {
-      await result.current.send("  admin-secret  ");
-    });
-
-    expect(fetchFn).toHaveBeenCalledWith(
-      expect.stringContaining("/api/notifications/send-now"),
-      expect.objectContaining({
-        method: "POST",
-        headers: { "X-Notification-Token": "admin-secret" },
-      }),
-    );
-    expect(result.current.isError).toBe(false);
-    expect(result.current.message).toContain("Đã gửi 3 số");
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("explains an invalid admin token", async () => {
+  it("explains a duplicate cloud Telegram operation", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ ok: false, status: 401 })) as unknown as typeof fetch,
+      vi.fn(async () =>
+        new Response(null, {
+          status: 429,
+          headers: { "Retry-After": "60" },
+        }),
+      ),
     );
     const { result } = renderHook(() => useSendAbsenceNotification());
 
     await act(async () => {
-      await result.current.send("wrong-token");
+      await result.current.send("admin-secret");
     });
 
     expect(result.current.isError).toBe(true);
-    expect(result.current.message).toContain("không đúng");
+    expect(result.current.message).toContain("cùng loại đang được xử lý");
   });
 });

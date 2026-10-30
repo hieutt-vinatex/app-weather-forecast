@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useAbsenceNotifications } from "../hooks/useAbsenceNotifications";
-import { useSendAbsenceNotification } from "../hooks/useSendAbsenceNotification";
 import type { FrequencyItem, GdbRecord, Meta } from "../types/gdb";
 import {
   buildAbsenceStatuses,
@@ -25,8 +24,6 @@ interface Props {
 export function AbsenceMonitor({ records, frequencies, meta, theme }: Props): JSX.Element | null {
   const [minDays, setMinDays] = useState(19);
   const [maxDays, setMaxDays] = useState(25);
-  const [notificationAdminToken, setNotificationAdminToken] = useState("");
-  const immediateNotification = useSendAbsenceNotification();
   const referenceDate = records[records.length - 1]?.date ?? "";
   const coverageStartDate = records[0]?.date ?? referenceDate;
   const statuses = useMemo(
@@ -144,7 +141,7 @@ export function AbsenceMonitor({ records, frequencies, meta, theme }: Props): JS
           </h3>
           <p className="mt-1 text-xs leading-5 text-ink-soft dark:text-slate-400">
             Gửi thông báo trình duyệt một lần cho mỗi kỳ nếu có số nằm trong khoảng {minDays}–{maxDays} ngày.
-            Trình duyệt cần đang mở. Telegram, Zalo và Facebook được cấu hình riêng trên backend.
+            Trình duyệt cần đang mở. Telegram được chạy độc lập bởi tác vụ cloud.
           </p>
           <dl className="mt-3 space-y-2 text-sm">
             <StatusRow label="Trạng thái" value={notifications.enabled ? "Đang bật" : "Đang tắt"} />
@@ -180,63 +177,6 @@ export function AbsenceMonitor({ records, frequencies, meta, theme }: Props): JS
               Quyền thông báo đang bị chặn trong cài đặt trình duyệt.
             </p>
           ) : null}
-
-          <div className="mt-4 border-t border-line pt-4 dark:border-slate-700">
-            <h4 className="text-sm font-semibold text-ink dark:text-slate-100">
-              Gửi thông báo qua backend ngay
-            </h4>
-            <p id="send-now-help" className="mt-1 text-xs leading-5 text-ink-soft dark:text-slate-400">
-              Làm mới dữ liệu và gửi báo cáo các số chưa xuất hiện từ 19–25 ngày đến
-              Telegram, Zalo hoặc Facebook đã cấu hình. Khóa chỉ được giữ trong bộ nhớ
-              của trang hiện tại.
-            </p>
-            <form
-              className="mt-3 space-y-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (notificationAdminToken.trim()) {
-                  void immediateNotification.send(notificationAdminToken);
-                }
-              }}
-            >
-              <label className="block text-xs font-medium text-ink-soft dark:text-slate-400">
-                Khóa quản trị thông báo
-                <input
-                  type="password"
-                  value={notificationAdminToken}
-                  onChange={(event) => setNotificationAdminToken(event.target.value)}
-                  aria-describedby="send-now-help"
-                  autoComplete="off"
-                  placeholder="NOTIFICATION_ADMIN_TOKEN"
-                  className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink outline-none focus:border-lotto-red focus:ring-2 focus:ring-red-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-red-900/30"
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={
-                  immediateNotification.isSending || !notificationAdminToken.trim()
-                }
-                className="w-full rounded-lg bg-lotto-red px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lotto-red"
-              >
-                {immediateNotification.isSending
-                  ? "Đang tính và gửi…"
-                  : "Gửi thông báo 19–25 ngày ngay"}
-              </button>
-            </form>
-            {immediateNotification.message ? (
-              <p
-                role={immediateNotification.isError ? "alert" : "status"}
-                className={classNames(
-                  "mt-2 text-xs",
-                  immediateNotification.isError
-                    ? "text-state-danger"
-                    : "text-state-success",
-                )}
-              >
-                {immediateNotification.message}
-              </p>
-            ) : null}
-          </div>
         </div>
       </div>
 

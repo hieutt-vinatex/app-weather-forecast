@@ -38,10 +38,10 @@ function KpiCard({ label, value, hint, icon, accent = "blue" }: KpiCardProps): J
 
 interface KpiCardsProps {
   stats: Statistics;
-  realtimeHint: string;
+  statusHint: string;
 }
 
-export function KpiCards({ stats, realtimeHint }: KpiCardsProps): JSX.Element {
+export function KpiCards({ stats, statusHint }: KpiCardsProps): JSX.Element {
   const hottest = stats.topNumbers[0];
 
   return (
@@ -77,7 +77,7 @@ export function KpiCards({ stats, realtimeHint }: KpiCardsProps): JSX.Element {
         accent="green"
         hint="dữ liệu lấy được"
       />
-      <KpiCard label="Realtime" value={realtimeHint} accent="cyan" hint="trạng thái nguồn" />
+      <KpiCard label="Dữ liệu" value={statusHint} accent="cyan" hint="trạng thái snapshot" />
     </div>
   );
 }

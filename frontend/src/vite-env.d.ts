@@ -2,9 +2,10 @@
 
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
-  readonly VITE_SSE_RECONNECT_BASE_MS?: string;
-  readonly VITE_SSE_RECONNECT_MAX_MS?: string;
-  readonly VITE_FALLBACK_POLL_MS?: string;
+  readonly VITE_ACTIVE_POLL_MS?: string;
+  readonly VITE_IDLE_POLL_MS?: string;
+  readonly VITE_OPERATION_POLL_MS?: string;
+  readonly VITE_OPERATION_TIMEOUT_MS?: string;
 }
 
 interface ImportMeta {

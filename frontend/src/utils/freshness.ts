@@ -1,4 +1,13 @@
 import { config } from "../config";
+import type { FreshnessStatus } from "../types/gdb";
+
+const FRESHNESS_LABELS: Record<FreshnessStatus, string> = {
+  current: "Dữ liệu hiện tại",
+  updating: "Đang cập nhật",
+  delayed: "Chậm cập nhật",
+  stale: "Dữ liệu đã cũ",
+  offline: "Ngoại tuyến",
+};
 
 export interface PollingContext {
   localTime: string;
@@ -29,6 +38,10 @@ export function pollIntervalMs(input: PollingContext): number | false {
 
 export function vietnamLocalTime(now = new Date()): string {
   return vietnamClock.format(now);
+}
+
+export function freshnessLabel(status: FreshnessStatus): string {
+  return FRESHNESS_LABELS[status];
 }
 
 function parseLocalTime(value: string): number | null {

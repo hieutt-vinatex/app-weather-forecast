@@ -2,8 +2,6 @@ import { config, type RangeDays } from "../config";
 import type {
   AcceptedOperation,
   OperationRecord,
-  RefreshResponse,
-  SendNotificationNowResponse,
   SnapshotResponse,
 } from "../types/gdb";
 
@@ -29,13 +27,8 @@ export function snapshotUrl(days: RangeDays): string {
   return `${config.apiBaseUrl}/api/gdb?days=${days}`;
 }
 
-export function streamUrl(days: RangeDays): string {
-  return `${config.apiBaseUrl}/api/gdb/stream?days=${days}`;
-}
-
 /**
- * Minimal structural validation of a snapshot payload. We do NOT trust raw
- * SSE / REST data blindly before pushing it into the query cache.
+ * Minimal structural validation of a snapshot payload before it enters cache.
  */
 export function isSnapshotResponse(value: unknown): value is SnapshotResponse {
   if (typeof value !== "object" || value === null) return false;
@@ -164,42 +157,6 @@ function safeApiError(status: number, headers: Headers): ApiError {
     503: "Dữ liệu cloud tạm thời chưa sẵn sàng",
   };
   return new ApiError(messages[status] ?? "Yêu cầu cloud thất bại", status, retryAfter);
-}
-
-export async function triggerRefresh(): Promise<RefreshResponse> {
-  const res = await fetch(`${config.apiBaseUrl}/api/gdb/refresh`, {
-    method: "POST",
-  });
-  if (res.status === 429) {
-    const retryAfterHeader = res.headers.get("Retry-After");
-    const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
-    throw new ApiError("Đang trong thời gian chờ làm mới", 429, retryAfter);
-  }
-  if (!res.ok) {
-    throw new ApiError("Làm mới thất bại", res.status);
-  }
-  return (await res.json()) as RefreshResponse;
-}
-
-export async function sendAbsenceNotificationNow(
-  adminToken: string,
-): Promise<SendNotificationNowResponse> {
-  const res = await fetch(`${config.apiBaseUrl}/api/notifications/send-now`, {
-    method: "POST",
-    headers: {
-      "X-Notification-Token": adminToken,
-    },
-  });
-  if (res.status === 401) {
-    throw new ApiError("Khóa quản trị không hợp lệ", 401);
-  }
-  if (res.status === 404) {
-    throw new ApiError("API gửi thông báo chưa được bật", 404);
-  }
-  if (!res.ok) {
-    throw new ApiError("Gửi thông báo thất bại", res.status);
-  }
-  return (await res.json()) as SendNotificationNowResponse;
 }
 
 export function snapshotQueryKey(days: RangeDays): readonly ["gdb", RangeDays] {

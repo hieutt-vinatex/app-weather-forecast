@@ -8,7 +8,7 @@ import "./index.css";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // The realtime stream is the primary update path; keep REST retries light.
+      // Snapshot polling handles freshness; keep transient REST retries bounded.
       retry: 1,
       refetchOnWindowFocus: false,
     },
