@@ -6,7 +6,7 @@ Cập nhật lần cuối: **2026-11-02** (`Asia/Ho_Chi_Minh`).
 
 - Dashboard: <https://hieutt-vinatex.github.io/app-weather-forecast/>
 - Source branch/default branch: `develop`
-- Commit đang triển khai: `6d5b0623381d01903bb5147406502a12040d2e50`
+- Commit ứng dụng đã xác minh tại cutover: `6d5b0623381d01903bb5147406502a12040d2e50`
 - Nền tảng: GitHub Pages + GitHub Actions
 - Telegram production: đã bật gửi thật; manual và scheduled đều đã được kiểm tra.
 
