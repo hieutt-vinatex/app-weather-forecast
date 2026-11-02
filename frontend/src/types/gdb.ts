@@ -93,21 +93,3 @@ export type FreshnessStatus =
   | "delayed"
   | "stale"
   | "offline";
-
-export type OperationKind = "data_refresh" | "telegram_send";
-export type OperationStatus = "queued" | "running" | "succeeded" | "failed";
-
-export interface AcceptedOperation {
-  requestId: string;
-  status: "queued";
-  statusUrl: string;
-}
-
-export interface OperationRecord {
-  requestId: string;
-  kind: OperationKind;
-  status: OperationStatus;
-  createdAt: string;
-  updatedAt: string;
-  message: string;
-}

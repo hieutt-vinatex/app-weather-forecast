@@ -1,11 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  ApiError,
-  fetchOperation,
-  fetchSnapshot,
-  startOperation,
-} from "./client";
+import { ApiError, fetchSnapshot } from "./client";
 import { makeSnapshot } from "../test/fixtures";
 
 const ACTIVE = "20261029T110500000000Z";
@@ -160,63 +155,5 @@ describe("static publication contracts", () => {
 
     expect(await fetchSnapshot(90)).toEqual(snapshot);
     expect(await fetchSnapshot(90)).toEqual(snapshot);
-  });
-
-});
-
-describe("legacy operation contracts", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("handles 202 operations and authenticates status reads", async () => {
-    const requestId = "123e4567-e89b-42d3-a456-426614174000";
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            requestId,
-            status: "queued",
-            statusUrl: `/api/operations/${requestId}`,
-          }),
-          { status: 202, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            requestId,
-            kind: "data_refresh",
-            status: "succeeded",
-            createdAt: "2026-10-29T11:00:00Z",
-            updatedAt: "2026-10-29T11:01:00Z",
-            message: "ok",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-    vi.stubGlobal("fetch", fetchFn);
-
-    const accepted = await startOperation("refresh", "admin-secret");
-    const operation = await fetchOperation(accepted.requestId, "admin-secret");
-
-    expect(operation.status).toBe("succeeded");
-    expect(fetchFn.mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({
-        headers: { "X-Notification-Token": "admin-secret" },
-      }),
-    );
-  });
-
-  it.each([401, 403, 429, 502])("maps HTTP %s to a safe ApiError", async (status) => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("private", { status })));
-
-    await expect(startOperation("refresh", "token")).rejects.toBeInstanceOf(
-      ApiError,
-    );
-    await expect(startOperation("refresh", "token")).rejects.not.toThrow(
-      /private/,
-    );
   });
 });

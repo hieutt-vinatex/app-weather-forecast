@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
+  base: "/app-weather-forecast/",
   plugins: [react()],
   build: {
     target: "es2020",

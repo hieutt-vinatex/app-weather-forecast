@@ -1,11 +1,9 @@
-# Frontend image — build static assets, serve behind Nginx with SSE-safe proxy.
+# Frontend image — build static assets for Nginx.
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
-# API base is same-origin (Nginx proxies /api). Override at build time if needed.
-ENV VITE_API_BASE_URL=""
 RUN npm run build
 
 FROM nginx:1.27-alpine

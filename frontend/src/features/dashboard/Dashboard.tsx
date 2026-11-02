@@ -7,9 +7,9 @@ import { prizeLabel } from "../../utils/prizes";
 import { useTheme } from "../../utils/theme";
 
 import { PartialWarning, StaleWarning } from "../../components/Alerts";
-import { AdminOperations } from "../../components/AdminOperations";
 import { AbsenceMonitor } from "../../components/AbsenceMonitor";
 import { Disclaimer } from "../../components/Disclaimer";
+import { GitHubOperationsLinks } from "../../components/GitHubOperationsLinks";
 import { HistoryTable } from "../../components/HistoryTable";
 import { KpiCards } from "../../components/KpiCards";
 import { ColdNumbersList, TopNumbersList } from "../../components/NumberLists";
@@ -71,7 +71,7 @@ export function Dashboard(): JSX.Element {
           onDaysChange={setDays}
         />
 
-        <AdminOperations />
+        <GitHubOperationsLinks />
 
         <main id="main">
           {query.isError && !data ? (
