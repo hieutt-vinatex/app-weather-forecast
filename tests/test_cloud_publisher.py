@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,7 @@ from app.cloud.publisher import (
     SnapshotPublisher,
     StorageWriteError,
 )
+from app.cloud.filesystem_store import FilesystemJsonStore
 from app.services.gdb_service import DayOutcome
 from app.services.snapshot_builder import SnapshotBuildContext
 
@@ -207,3 +209,43 @@ async def test_publish_prunes_versions_beyond_rollback_window(
 
     assert len(await store.list_keys("history:v1:")) == 2
     assert len(await store.list_keys("snapshot:v1:")) == 6
+
+
+async def test_filesystem_publication_keeps_three_versions_and_unrelated_files(
+    tmp_path: Path, outcomes, context, job
+):
+    store = FilesystemJsonStore(tmp_path)
+    publisher = SnapshotPublisher(store, retained_versions=3)
+    asset = tmp_path / "site/assets/app.js"
+    ledger = tmp_path / "state/telegram-ledger.json"
+    asset.parent.mkdir(parents=True)
+    ledger.parent.mkdir(parents=True)
+    asset.write_text("asset", encoding="utf-8")
+    ledger.write_text('{"events":{}}', encoding="utf-8")
+
+    manifests = []
+    for offset in range(4):
+        manifests.append(
+            await publisher.publish(
+                outcomes,
+                replace(
+                    context,
+                    fetched_at=context.fetched_at + timedelta(minutes=offset),
+                ),
+                job,
+            )
+        )
+
+    active = manifests[-1]
+    restored = await publisher.load_active_history()
+
+    assert [item.signature for item in restored] == [
+        item.signature for item in outcomes
+    ]
+    assert await store.get_json("manifest:v1") == active.model_dump(
+        mode="json", by_alias=True
+    )
+    assert len(await store.list_keys("history:v1:")) == 3
+    assert len(await store.list_keys("snapshot:v1:")) == 9
+    assert asset.read_text(encoding="utf-8") == "asset"
+    assert ledger.read_text(encoding="utf-8") == '{"events":{}}'
