@@ -543,10 +543,16 @@ def _contains_secret_material(raw: bytes, secret_values: tuple[bytes, ...]) -> b
 def _secret_values(values: Iterable[str] | None) -> tuple[bytes, ...]:
     candidates = list(values or ())
     candidates.extend(os.environ.get(name, "") for name in SECRET_NAMES)
+    expanded: list[str] = []
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        expanded.append(value)
+        expanded.extend(part.strip() for part in value.split(","))
     return tuple(
         value.encode("utf-8")
-        for value in candidates
-        if isinstance(value, str) and len(value) >= 8
+        for value in expanded
+        if len(value) >= 8
     )
 
 

@@ -283,3 +283,16 @@ async def test_publication_root_verifier_rejects_invalid_status_ledger_and_secre
     assert any("telegram-ledger.json" in error for error in report.errors)
     assert any("secret material" in error for error in report.errors)
     assert all(secret not in error for error in report.errors for secret in secrets)
+
+
+async def test_publication_secret_scan_splits_comma_separated_chat_ids(tmp_path: Path):
+    publication, _, _ = await published_tree(tmp_path)
+    chat_ids = "-1001234567890,987654321"
+    (publication / "site/index.html").write_text(
+        "recipient=987654321", encoding="utf-8"
+    )
+
+    report = verify_publication_root(publication, secret_values=(chat_ids,))
+
+    assert any("secret material" in error for error in report.errors)
+    assert all("987654321" not in error for error in report.errors)

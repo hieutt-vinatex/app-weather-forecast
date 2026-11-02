@@ -1,4 +1,4 @@
-name: Cloud data sync
+name: Data sync and Pages deploy
 
 on:
   schedule:
@@ -10,8 +10,6 @@ on:
       timezone: "Asia/Ho_Chi_Minh"
     - cron: "2 19 * * *"
       timezone: "Asia/Ho_Chi_Minh"
-  repository_dispatch:
-    types: [cloud-data-refresh]
   workflow_dispatch:
     inputs:
       mode:
@@ -25,32 +23,58 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloud-data-sync
+  group: github-pages-publication
   cancel-in-progress: false
 
 jobs:
-  sync:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUD_JOB_TIMEOUT_SECONDS: "1200"
-      EVENT_NAME: ${{ github.event_name }}
-      EVENT_SCHEDULE: ${{ github.event.schedule }}
-      INPUT_MODE: ${{ inputs.mode }}
-      REQUEST_ID: ${{ github.event.client_payload.request_id }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          path: source
+      - name: Check out publication workspace
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          path: publication
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-cloud.txt
-      - run: pip install -r requirements-cloud.txt
-      - name: Run bounded data job
+          cache-dependency-path: source/requirements-cloud.txt
+      - run: pip install -r source/requirements-cloud.txt
+      - name: Load publication branch
         shell: bash
+        run: |
+          if git -C publication fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+            git -C publication checkout -B gh-pages refs/remotes/origin/gh-pages
+          else
+            git -C publication checkout --orphan gh-pages
+            git -C publication rm -rf .
+          fi
+          git -C publication config user.name "github-actions[bot]"
+          git -C publication config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Run bounded data job
+        id: sync
+        continue-on-error: true
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+          CLOUD_JOB_TIMEOUT_SECONDS: "1200"
         run: |
           if [[ "$EVENT_NAME" == "schedule" ]]; then
             if [[ "$EVENT_SCHEDULE" == "17 3 * * *" ]]; then
@@ -58,14 +82,60 @@ jobs:
             else
               mode="incremental"
             fi
-          elif [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
-            mode="incremental"
           else
             mode="${INPUT_MODE:-full}"
           fi
+          python source/scripts/cloud_job.py sync --mode "$mode" --store-root publication
+      - name: Capture bounded data change
+        id: capture
+        shell: bash
+        run: |
+          change_root="$(mktemp -d "$RUNNER_TEMP/data-change.XXXXXX")"
+          mkdir -p "$change_root"
+          cp -a publication/site/data "$change_root/data"
+          echo "path=$change_root" >> "$GITHUB_OUTPUT"
+      - name: Verify and push data safely
+        shell: bash
+        env:
+          CHANGE_ROOT: ${{ steps.capture.outputs.path }}
+        run: |
+          published=false
+          for attempt in 1 2 3; do
+            if git -C publication fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+              git -C publication reset --hard refs/remotes/origin/gh-pages
+              git -C publication clean -fd
+            fi
 
-          args=(sync --mode "$mode")
-          if [[ -n "$REQUEST_ID" ]]; then
-            args+=(--request-id "$REQUEST_ID")
-          fi
-          python scripts/cloud_job.py "${args[@]}"
+            rm -rf publication/site/data
+            mkdir -p publication/site
+            cp -a "$CHANGE_ROOT/data" publication/site/data
+            python source/scripts/verify_cloud_contracts.py --publication-root publication
+            git -C publication add site/data
+            if ! git -C publication diff --cached --quiet; then
+              git -C publication commit -m "data: publish latest snapshots"
+            fi
+
+            if git -C publication show-ref --verify --quiet refs/remotes/origin/gh-pages && \
+              git -C publication diff --quiet refs/remotes/origin/gh-pages HEAD; then
+              published=true
+              break
+            fi
+            if git -C publication push origin HEAD:gh-pages; then
+              published=true
+              break
+            fi
+            echo "Publication changed remotely; retrying attempt $attempt of 3"
+          done
+          test "$published" = true
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: publication/site
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Report data job failure after safe publication
+        if: steps.sync.outcome != 'success'
+        run: |
+          echo "Data sync failed; the previous manifest remains active and status was published."
+          exit 1

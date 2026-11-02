@@ -1,0 +1,106 @@
+name: Deploy GitHub Pages
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages-publication
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out tested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: source
+      - name: Check out publication workspace
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          path: publication
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: source/frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build dashboard
+        working-directory: source/frontend
+        run: npm ci && npm run build
+      - name: Load publication branch
+        shell: bash
+        run: |
+          if git -C publication fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+            git -C publication checkout -B gh-pages refs/remotes/origin/gh-pages
+          else
+            git -C publication checkout --orphan gh-pages
+            git -C publication rm -rf .
+          fi
+          git -C publication config user.name "github-actions[bot]"
+          git -C publication config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Install, verify and push site safely
+        shell: bash
+        run: |
+          published=false
+          for attempt in 1 2 3; do
+            if git -C publication fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+              git -C publication reset --hard refs/remotes/origin/gh-pages
+              git -C publication clean -fd
+            fi
+
+            python source/scripts/prepare_pages.py \
+              --publication-root publication \
+              --dist-root source/frontend/dist
+            if [[ -f publication/site/data/manifest.json ]]; then
+              python source/scripts/verify_cloud_contracts.py --publication-root publication
+            else
+              echo "Preparing the initial site before the first full data sync."
+            fi
+            git -C publication add site
+            if ! git -C publication diff --cached --quiet; then
+              git -C publication commit -m "deploy: update dashboard site"
+            fi
+
+            if git -C publication show-ref --verify --quiet refs/remotes/origin/gh-pages && \
+              git -C publication diff --quiet refs/remotes/origin/gh-pages HEAD; then
+              published=true
+              break
+            fi
+            if git -C publication push origin HEAD:gh-pages; then
+              published=true
+              break
+            fi
+            echo "Publication changed remotely; retrying attempt $attempt of 3"
+          done
+          test "$published" = true
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: publication/site
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

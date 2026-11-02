@@ -1,4 +1,4 @@
-name: Cloud Telegram notification
+name: Telegram notification
 
 on:
   schedule:
@@ -6,8 +6,6 @@ on:
       timezone: "Asia/Ho_Chi_Minh"
     - cron: "7 12 * * *"
       timezone: "Asia/Ho_Chi_Minh"
-  repository_dispatch:
-    types: [cloud-telegram-send]
   workflow_dispatch:
     inputs:
       mode:
@@ -25,42 +23,59 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloud-telegram
+  group: github-pages-publication
   cancel-in-progress: false
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      NOTIFICATION_LEDGER_HMAC_KEY: ${{ secrets.NOTIFICATION_LEDGER_HMAC_KEY }}
       NOTIFICATION_DRY_RUN: ${{ vars.NOTIFICATION_DRY_RUN || 'true' }}
       CLOUD_JOB_TIMEOUT_SECONDS: "900"
       EVENT_NAME: ${{ github.event_name }}
       INPUT_MODE: ${{ inputs.mode }}
       INPUT_REQUEST_ID: ${{ inputs.request_id }}
-      DISPATCH_REQUEST_ID: ${{ github.event.client_payload.request_id }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          path: source
+      - name: Check out publication workspace
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          path: publication
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-cloud.txt
-      - run: pip install -r requirements-cloud.txt
+          cache-dependency-path: source/requirements-cloud.txt
+      - run: pip install -r source/requirements-cloud.txt
+      - name: Load publication branch
+        shell: bash
+        run: |
+          if git -C publication fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+            git -C publication checkout -B gh-pages refs/remotes/origin/gh-pages
+          else
+            git -C publication checkout --orphan gh-pages
+            git -C publication rm -rf .
+          fi
+          git -C publication config user.name "github-actions[bot]"
+          git -C publication config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Run bounded Telegram job
         shell: bash
         run: |
           mode="scheduled"
           request_id=""
-          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
-            mode="manual"
-            request_id="$DISPATCH_REQUEST_ID"
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             mode="${INPUT_MODE:-scheduled}"
             request_id="$INPUT_REQUEST_ID"
           fi
@@ -72,4 +87,45 @@ jobs:
             fi
             args+=(--request-id "$request_id")
           fi
-          python scripts/cloud_job.py "${args[@]}"
+          python source/scripts/cloud_job.py "${args[@]}" --store-root publication
+      - name: Verify publication and capture bounded state change
+        id: capture
+        shell: bash
+        run: |
+          python source/scripts/verify_cloud_contracts.py --publication-root publication
+          change_root="$(mktemp -d "$RUNNER_TEMP/state-change.XXXXXX")"
+          mkdir -p publication/state "$change_root"
+          cp -a publication/state "$change_root/state"
+          echo "path=$change_root" >> "$GITHUB_OUTPUT"
+      - name: Push Telegram state safely
+        shell: bash
+        env:
+          CHANGE_ROOT: ${{ steps.capture.outputs.path }}
+        run: |
+          published=false
+          for attempt in 1 2 3; do
+            if git -C publication fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+              git -C publication reset --hard refs/remotes/origin/gh-pages
+              git -C publication clean -fd
+            fi
+
+            rm -rf publication/state
+            cp -a "$CHANGE_ROOT/state" publication/state
+            python source/scripts/verify_cloud_contracts.py --publication-root publication
+            git -C publication add state
+            if ! git -C publication diff --cached --quiet; then
+              git -C publication commit -m "telegram: persist delivery state"
+            fi
+
+            if git -C publication show-ref --verify --quiet refs/remotes/origin/gh-pages && \
+              git -C publication diff --quiet refs/remotes/origin/gh-pages HEAD; then
+              published=true
+              break
+            fi
+            if git -C publication push origin HEAD:gh-pages; then
+              published=true
+              break
+            fi
+            echo "Publication changed remotely; retrying attempt $attempt of 3"
+          done
+          test "$published" = true
