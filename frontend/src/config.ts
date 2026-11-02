@@ -17,6 +17,7 @@ export const config = {
   idlePollMs: num(import.meta.env.VITE_IDLE_POLL_MS, 300000),
   operationPollMs: num(import.meta.env.VITE_OPERATION_POLL_MS, 2000),
   operationTimeoutMs: num(import.meta.env.VITE_OPERATION_TIMEOUT_MS, 900000),
+  manifestCacheMs: num(import.meta.env.VITE_MANIFEST_CACHE_MS, 30000),
 } as const;
 
 export type RangeDays = 30 | 60 | 90;

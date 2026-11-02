@@ -4,13 +4,17 @@ import type {
   OperationRecord,
   SnapshotResponse,
 } from "../types/gdb";
+import {
+  fetchPublication,
+  snapshotPath,
+  type PublicationPointer,
+  type PublishedJobStatus,
+} from "./publication";
 
 export type CloudOperation = "refresh" | "telegram";
 
-const snapshotCache = new Map<
-  RangeDays,
-  { etag: string | null; snapshot: SnapshotResponse }
->();
+const snapshotCache = new Map<string, SnapshotResponse>();
+const latestRangeCache = new Map<RangeDays, SnapshotResponse>();
 
 export class ApiError extends Error {
   constructor(
@@ -21,10 +25,6 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
-}
-
-export function snapshotUrl(days: RangeDays): string {
-  return `${config.apiBaseUrl}/api/gdb?days=${days}`;
 }
 
 /**
@@ -64,23 +64,80 @@ export async function fetchSnapshot(
   days: RangeDays,
   signal?: AbortSignal,
 ): Promise<SnapshotResponse> {
-  const cached = snapshotCache.get(days);
-  const headers: Record<string, string> = {};
-  if (cached?.etag) headers["If-None-Match"] = cached.etag;
-  const res = await fetch(snapshotUrl(days), { signal, headers });
-  if (res.status === 304) {
-    if (cached) return cached.snapshot;
-    throw new ApiError("Bộ nhớ đệm snapshot không còn hợp lệ", 502);
+  let publication;
+  try {
+    publication = await fetchPublication(Date.now(), signal);
+  } catch {
+    const retained = latestRangeCache.get(days);
+    if (retained) return retained;
+    throw new ApiError("Dữ liệu xuất bản tạm thời chưa sẵn sàng", 503);
   }
-  if (!res.ok) {
-    throw safeApiError(res.status, res.headers);
+
+  const pointers: PublicationPointer[] = [publication.manifest];
+  if (publication.manifest.previousPublication) {
+    pointers.push(publication.manifest.previousPublication);
   }
-  const json: unknown = await res.json();
-  if (!isSnapshotResponse(json) || json.meta.requestedDays !== days) {
-    throw new ApiError("Dữ liệu snapshot không hợp lệ", 500);
+  for (const pointer of pointers) {
+    const snapshot = await loadVersion(pointer, days, signal);
+    if (!snapshot) continue;
+    const shaped = withLatestJobStatus(snapshot, pointer, publication.status);
+    latestRangeCache.set(days, shaped);
+    return shaped;
   }
-  snapshotCache.set(days, { etag: res.headers.get("ETag"), snapshot: json });
-  return json;
+  throw new ApiError("Dữ liệu snapshot không hợp lệ", 500);
+}
+
+async function loadVersion(
+  pointer: PublicationPointer,
+  days: RangeDays,
+  signal?: AbortSignal,
+): Promise<SnapshotResponse | null> {
+  const cacheKey = `${pointer.version}:${days}`;
+  const cached = snapshotCache.get(cacheKey);
+  if (cached) return cached;
+  try {
+    const response = await fetch(snapshotPath(pointer.version, days), {
+      cache: "force-cache",
+      signal,
+    });
+    if (!response.ok) return null;
+    const value: unknown = await response.json();
+    if (!isSnapshotResponse(value) || value.meta.requestedDays !== days) {
+      return null;
+    }
+    snapshotCache.set(cacheKey, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function withLatestJobStatus(
+  snapshot: SnapshotResponse,
+  pointer: PublicationPointer,
+  status: PublishedJobStatus | null,
+): SnapshotResponse {
+  const lastJobStatus = status?.status ?? pointer.lastJob.status;
+  const freshnessStatus =
+    lastJobStatus === "running"
+      ? "updating"
+      : lastJobStatus === "failed"
+        ? "delayed"
+        : snapshot.meta.freshnessStatus;
+  if (
+    snapshot.meta.lastJobStatus === lastJobStatus &&
+    snapshot.meta.freshnessStatus === freshnessStatus
+  ) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    meta: {
+      ...snapshot.meta,
+      lastJobStatus,
+      freshnessStatus,
+    },
+  };
 }
 
 export async function startOperation(

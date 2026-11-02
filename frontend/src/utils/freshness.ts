@@ -70,10 +70,15 @@ export function effectiveFreshnessStatus(
     localMinutes !== null &&
     localMinutes >= ACTIVE_START &&
     localMinutes <= ACTIVE_END;
+  const currentLimit = active ? 10 : 26 * 60;
   const staleLimit = active ? 20 : 48 * 60;
   if (ageMinutes > staleLimit) return "stale";
+  if (input.serverStatus === "updating") return "updating";
   if (input.requestFailed && input.serverStatus === "current") return "delayed";
-  return input.serverStatus;
+  if (input.serverStatus === "delayed" || ageMinutes > currentLimit) {
+    return "delayed";
+  }
+  return "current";
 }
 
 function parseLocalTime(value: string): number | null {

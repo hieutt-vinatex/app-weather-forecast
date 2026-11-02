@@ -56,4 +56,70 @@ describe("effectiveFreshnessStatus", () => {
       }),
     ).toBe("offline");
   });
+
+  it.each([
+    ["2026-10-30T17:50:00+07:00", "current"],
+    ["2026-10-30T17:49:59+07:00", "delayed"],
+    ["2026-10-30T17:40:00+07:00", "delayed"],
+    ["2026-10-30T17:39:59+07:00", "stale"],
+  ] as const)("uses active-window age for %s", (generatedAt, expected) => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "current",
+        generatedAt,
+        now: new Date("2026-10-30T18:00:00+07:00"),
+        online: true,
+      }),
+    ).toBe(expected);
+  });
+
+  it.each([
+    ["2026-10-29T08:00:00+07:00", "current"],
+    ["2026-10-29T07:59:59+07:00", "delayed"],
+    ["2026-10-28T10:00:00+07:00", "delayed"],
+    ["2026-10-28T09:59:59+07:00", "stale"],
+  ] as const)("uses idle-window age for %s", (generatedAt, expected) => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "current",
+        generatedAt,
+        now: new Date("2026-10-30T10:00:00+07:00"),
+        online: true,
+      }),
+    ).toBe(expected);
+  });
+
+  it("keeps stale age authoritative over a failed latest job", () => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "delayed",
+        generatedAt: "2026-10-27T10:00:00+07:00",
+        now: new Date("2026-10-30T10:00:00+07:00"),
+        online: true,
+      }),
+    ).toBe("stale");
+  });
+
+  it("reports delayed for a failed request while otherwise current", () => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "current",
+        generatedAt: "2026-10-30T09:59:00+07:00",
+        now: new Date("2026-10-30T10:00:00+07:00"),
+        online: true,
+        requestFailed: true,
+      }),
+    ).toBe("delayed");
+  });
+
+  it("treats malformed timestamps as stale", () => {
+    expect(
+      effectiveFreshnessStatus({
+        serverStatus: "current",
+        generatedAt: "not-a-date",
+        now: new Date("2026-10-30T10:00:00+07:00"),
+        online: true,
+      }),
+    ).toBe("stale");
+  });
 });
