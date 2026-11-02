@@ -37,7 +37,7 @@ jobs:
       TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
       NOTIFICATION_LEDGER_HMAC_KEY: ${{ secrets.NOTIFICATION_LEDGER_HMAC_KEY }}
       NOTIFICATION_DRY_RUN: ${{ vars.NOTIFICATION_DRY_RUN || 'true' }}
-      CLOUD_JOB_TIMEOUT_SECONDS: "900"
+      GITHUB_JOB_TIMEOUT_SECONDS: "900"
       EVENT_NAME: ${{ github.event_name }}
       INPUT_MODE: ${{ inputs.mode }}
       INPUT_REQUEST_ID: ${{ inputs.request_id }}

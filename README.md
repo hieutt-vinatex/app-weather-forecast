@@ -6,50 +6,50 @@ và gửi báo cáo số chưa xuất hiện qua Telegram.
 > Dữ liệu chỉ phục vụ thống kê và tham khảo, không phải dự đoán kết quả và không
 > khuyến khích đặt cược.
 
-## Production được chọn: static-first cloud
+## Production: một nền tảng GitHub, chi phí 0
 
-Hệ thống production không cần máy cá nhân hoặc server FastAPI chạy liên tục:
+Production không cần máy cá nhân hay server chạy liên tục:
 
 ```text
-GitHub Actions ──crawl/tính toán──> Cloudflare Workers KV
-       │                                  │
-       └──Telegram buổi sáng              └──Cloudflare Worker API
-                                                    │
-                                             Vercel React SPA
+GitHub Actions ──đồng bộ──> nhánh gh-pages/site/data
+       │                         │
+       ├──gửi Telegram           └──GitHub Pages ──> Dashboard
+       └──lưu ledger HMAC──> nhánh gh-pages/state
 ```
 
-- GitHub Actions chạy full sync hằng ngày và incremental sync khoảng 5 phút trong
-  giờ quay.
-- Cloudflare Worker phục vụ snapshot versioned 30/60/90 ngày, ETag/304, freshness
-  và chuyển thao tác quản trị sang job hữu hạn.
-- Vercel phục vụ frontend tĩnh; trình duyệt polling thích ứng, dừng khi tab ẩn hoặc
-  offline.
-- Telegram thử lại trong buổi sáng; state trong KV ngăn lịch tự động gửi lặp sau
-  khi đã thành công.
+- GitHub Pages phục vụ bundle React và snapshot tĩnh theo version.
+- GitHub Actions chạy full sync hằng ngày, incremental sync trong giờ quay và
+  Telegram vào buổi sáng.
+- Dashboard chỉ tải file tĩnh; token bot và chat ID không đi vào bundle hay
+  Pages artifact.
+- Hai thao tác thủ công **Làm mới dữ liệu** và **Gửi Telegram ngay** mở workflow
+  tương ứng trong tab Actions.
 
-Hướng dẫn đầy đủ, theo dashboard và ưu tiên chi phí 0:
-[docs/CLOUD_DEPLOYMENT.md](docs/CLOUD_DEPLOYMENT.md).
+URL production dự kiến:
+<https://hieutt-vinatex.github.io/app-weather-forecast/>.
+
+Hướng dẫn triển khai đầy đủ: [docs/CLOUD_DEPLOYMENT.md](docs/CLOUD_DEPLOYMENT.md).
 
 ## Hành vi dữ liệu
 
-- Lịch sử đã xuất bản của hôm qua và các ngày trước hiển thị ngay, không phải chờ
-  job của ngày đang quay.
-- Kết quả ngày đang quay thường có độ trễ khoảng 5–10 phút trong kiến trúc miễn phí.
-- Badge hiển thị rõ `Dữ liệu hiện tại`, `Đang cập nhật`, `Chậm cập nhật`,
-  `Dữ liệu đã cũ` hoặc `Ngoại tuyến`.
-- Khi sync lỗi, snapshot hợp lệ gần nhất và bảng lịch sử vẫn được giữ nguyên.
-- Khóa quản trị chỉ nằm trong bộ nhớ tab, không ghi vào browser storage hoặc URL.
+- Dữ liệu hôm qua và các ngày trước hiển thị ngay từ snapshot gần nhất; người
+  dùng không cần chờ dữ liệu của ngày đang quay.
+- Kết quả ngày đang quay thường có độ trễ khoảng 10–15 phút trên lịch miễn phí.
+- Dashboard tự đọc manifest mới theo chu kỳ 30 giây khi tab đang hoạt động và
+  chậm hơn khi tab ở nền.
+- Khi đồng bộ lỗi, manifest đang hoạt động không đổi; lịch sử hợp lệ gần nhất vẫn
+  được giữ và trạng thái chuyển sang chậm cập nhật.
+- Có thể chọn lại phạm vi 30/60/90 ngày bất kỳ lúc nào.
 
 ## Thành phần chính
 
 ```text
-.github/workflows/        CI, data sync, Telegram, Worker deployment
-app/cloud/                domain jobs hữu hạn, KV publication, notification state
-cloudflare/worker/        public/admin API trên Workers KV
-frontend/                 React + TypeScript + Vite dashboard
-scripts/cloud_job.py      entrypoint cho GitHub Actions
-tests/                    Python tests
-docs/                     cloud setup và đường local legacy
+.github/workflows/       CI, Pages deploy, data sync và Telegram
+app/cloud/               job dữ liệu, publication và notification state
+frontend/                React + TypeScript + Vite dashboard
+scripts/cloud_job.py     entrypoint job hữu hạn cho GitHub Actions
+scripts/prepare_pages.py ghép bundle với dữ liệu xuất bản
+tests/                   kiểm thử Python và hợp đồng workflow/tài liệu
 ```
 
 ## Kiểm tra trước khi phát hành
@@ -61,31 +61,25 @@ cd frontend
 npm test
 npm run lint
 npm run build
-
-cd ../cloudflare/worker
-npm test
-npm run typecheck
 ```
 
-CI chạy các cổng trên và kiểm tra syntax của toàn bộ workflow. Snapshot cloud có
-thêm contract verifier ở `scripts/verify_cloud_contract.py`.
+CI chạy Python 3.12, Node 20 và kiểm tra syntax của mọi workflow.
 
 ## Telegram
 
-Thiết lập BotFather, group chat ID, dry-run và lịch gửi được mô tả tại
-[docs/TELEGRAM_GROUP.md](docs/TELEGRAM_GROUP.md). Token chỉ được lưu trong GitHub
-Actions secrets; frontend không nhận hoặc đọc bot token.
+Thiết lập BotFather, group, ba repository secrets, dry-run và lịch gửi tại
+[docs/TELEGRAM_GROUP.md](docs/TELEGRAM_GROUP.md). Ledger chỉ lưu định danh target
+đã HMAC; không lưu chat ID thô hoặc token.
 
-## FastAPI/Docker local legacy
+## Phát triển local
 
-`app/main.py`, Docker Compose, scheduler in-memory và các route SSE cũ được giữ
-tạm thời để phát triển local/đối chiếu parity. Đây không phải kiến trúc production
-được chọn và không nên dùng cho deploy miễn phí. Xem
-[docs/INSTALLATION.md](docs/INSTALLATION.md) nếu cần chạy đường legacy này.
+FastAPI local là tùy chọn để đối chiếu logic backend cũ; production không gọi
+FastAPI. Việc deploy, đồng bộ dữ liệu và gửi Telegram đều thực hiện trong GitHub
+sau khi cấu hình ban đầu. Xem [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Tài liệu
 
-- [Triển khai cloud chi phí 0](docs/CLOUD_DEPLOYMENT.md)
-- [Cài đặt local legacy và chạy test](docs/INSTALLATION.md)
+- [Triển khai GitHub-only](docs/CLOUD_DEPLOYMENT.md)
 - [Telegram Group](docs/TELEGRAM_GROUP.md)
-- [Thiết kế static-first](docs/superpowers/specs/2026-10-29-static-first-cloud-deployment-design.md)
+- [Cài đặt và kiểm thử local tùy chọn](docs/INSTALLATION.md)
+- [Thiết kế đã duyệt](docs/superpowers/specs/2026-11-02-github-only-free-deployment-design.md)

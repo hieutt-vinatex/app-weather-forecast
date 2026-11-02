@@ -1,284 +1,152 @@
-# Triển khai cloud chi phí 0
+# Triển khai production GitHub-only, chi phí 0
 
-Đây là đường triển khai production được chọn. Ứng dụng không cần FastAPI,
-scheduler hoặc máy cá nhân chạy liên tục:
+Đây là runbook production chính thức. Sau lần cấu hình đầu tiên, toàn bộ build,
+đồng bộ dữ liệu, phát hành website và gửi Telegram chạy trên GitHub; máy cá nhân
+không cần hoạt động.
 
-- Vercel phục vụ React/Vite dưới dạng static SPA.
-- Cloudflare Worker đọc snapshot từ Workers KV và nhận thao tác quản trị.
-- GitHub Actions chạy job đồng bộ dữ liệu hữu hạn và gửi Telegram.
-- Trình duyệt polling snapshot bằng ETag; lịch sử 30/60/90 ngày vẫn xem được khi
-  job hiện tại đang chậm hoặc lỗi.
-- Manifest giữ con trỏ tới bản xuất bản trước; Worker tự đọc lui bản này nếu KV
-  đang lan truyền manifest mới nhanh hơn snapshot tương ứng.
+## Kiến trúc và điều kiện chi phí 0
 
-Mục tiêu là 0 đồng cho dự án cá nhân quy mô nhỏ. Hạn mức miễn phí có thể thay đổi;
-phần [Giám sát chi phí](#10-giám-sát-chi-phí-0) nêu các điểm cần theo dõi.
+- Repository public dùng standard hosted runner và GitHub Pages cho website tĩnh.
+- Nhánh `develop` chứa source, test và workflow; yêu cầu default branch `develop`
+  để lịch và nút chạy thủ công luôn lấy đúng workflow.
+- Nhánh `gh-pages` do workflow quản lý: `site/` chứa bundle + JSON công khai,
+  `state/` chứa ledger Telegram đã HMAC.
+- Pages artifact chỉ lấy `gh-pages/site`; `state` không được đưa vào website.
+- URL production: <https://hieutt-vinatex.github.io/app-weather-forecast/>.
 
-## 1. Chuẩn bị tài khoản
+Mọi file trên nhánh `gh-pages` vẫn phải được coi là công khai. Không commit hoặc
+in ra log token, chat ID hay HMAC key.
 
-Cần ba tài khoản có thể đăng nhập bằng dashboard:
+## Cấu hình bắt buộc
 
-1. GitHub chứa repository này và bật Actions.
-2. Cloudflare Workers Free.
-3. Vercel Hobby cho dự án cá nhân, phi thương mại.
+Trong repository, mở **Settings → Secrets and variables → Actions**.
 
-Không đưa token, chat ID hoặc khóa quản trị vào commit, issue, log hay cửa sổ chat.
-Nên dùng password manager để tạo/lưu khóa quản trị dài, ngẫu nhiên.
+Tạo đúng ba repository secrets, không nhập giá trị vào source:
 
-## 2. Danh sách cấu hình bắt buộc
-
-Các tên dưới đây là chính xác; bảng cố ý không chứa giá trị.
-
-| Nơi lưu | Tên |
-|---|---|
-| GitHub Actions secret | `CLOUDFLARE_ACCOUNT_ID` |
-| GitHub Actions secret | `CLOUDFLARE_API_TOKEN` |
-| GitHub Actions secret | `CLOUDFLARE_KV_NAMESPACE_ID` |
-| GitHub Actions secret | `TELEGRAM_BOT_TOKEN` |
-| GitHub Actions secret | `TELEGRAM_CHAT_IDS` |
-| Cloudflare Worker secret | `NOTIFICATION_ADMIN_TOKEN` |
-| Cloudflare Worker secret | `GITHUB_DISPATCH_TOKEN` |
-| Cloudflare Worker variable | `GITHUB_OWNER` |
-| Cloudflare Worker variable | `GITHUB_REPO` |
-
-Biến không bí mật bổ sung:
-
-| Nơi lưu | Tên | Mục đích |
-|---|---|---|
-| GitHub Actions variable | `ALLOWED_ORIGINS` | Danh sách origin Vercel, cách nhau bằng dấu phẩy |
-| GitHub Actions variable | `NOTIFICATION_DRY_RUN` | Giữ `true` đến khi kiểm tra xong Telegram |
-| Vercel environment variable | `VITE_API_BASE_URL` | URL HTTPS của Cloudflare Worker, không có dấu `/` cuối |
-
-Các biến `VITE_*` đều được đóng gói vào JavaScript công khai. Tuyệt đối không đặt
-bí mật trong Vercel/Vite.
-
-## 3. Tạo Cloudflare KV và token CI
-
-Thực hiện trong Cloudflare dashboard:
-
-1. Chọn đúng account, mở **Storage & Databases → KV** và tạo một namespace KV
-   chuẩn, ví dụ đặt tên để nhận biết staging. Không chọn KV Instant đang beta.
-2. Ghi lại Account ID và Namespace ID vào password manager.
-3. Mở **My Profile → API Tokens → Create Token**. Dùng quyền tối thiểu đủ để:
-   - triển khai Worker;
-   - đọc/ghi Workers KV từ job GitHub Actions.
-4. Giới hạn token vào đúng account. Nếu Worker chưa tồn tại, lần triển khai đầu cần
-   quyền tạo Worker; sau đó có thể thay bằng token chỉ có quyền sửa Worker đó và
-   đọc/ghi KV.
-
-Cloudflare mô tả cách tạo/bind namespace trong
-[Workers KV](https://developers.cloudflare.com/kv/get-started/) và khuyến nghị API
-token cho CI trong
-[GitHub Actions deployment](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/).
-
-## 4. Cấu hình GitHub Actions và triển khai Worker
-
-Trong repository GitHub, mở **Settings → Secrets and variables → Actions**.
-
-### Secrets
-
-Tạo năm repository secrets:
-
-- `CLOUDFLARE_ACCOUNT_ID`
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_KV_NAMESPACE_ID`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_IDS`
+- `NOTIFICATION_LEDGER_HMAC_KEY`
 
-### Variables
+`NOTIFICATION_LEDGER_HMAC_KEY` nên là chuỗi ngẫu nhiên riêng, dài ít nhất 32 ký
+tự và không dùng lại bot token. Tạo một repository variable:
 
-Tạo hai repository variables:
+- `NOTIFICATION_DRY_RUN=true`
 
-- `ALLOWED_ORIGINS`: origin Vercel chính xác, phân tách bằng dấu phẩy; không dùng
-  wildcard. Có thể cập nhật sau khi Vercel cấp URL đầu tiên.
-- `NOTIFICATION_DRY_RUN`: đặt `true`.
+Không tạo biến `VITE_*` chứa secret. Mọi biến Vite đều công khai trong JavaScript.
 
-GitHub hướng dẫn vị trí tạo secret/variable tại
-[Using secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
-và [Using variables](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-variables).
+## Thứ tự bootstrap bắt buộc
 
-Khi code đã nằm trên nhánh `develop`, workflow **CI** chạy trước; nếu xanh,
-**Deploy Cloudflare Worker** tự triển khai `cloudflare/worker` và bind namespace
-`SNAPSHOTS`. Mở tab **Actions** để xác nhận cả hai workflow thành công. URL mặc
-định có dạng HTTPS trên miền `workers.dev`.
+Thực hiện đúng thứ tự này để khởi tạo website trước, sau đó mới xuất bản dữ liệu:
 
-Nếu repository dùng nhánh production khác `develop`, đổi đồng thời bộ lọc nhánh
-trong `.github/workflows/ci.yml`, `.github/workflows/deploy-worker.yml` và thiết
-lập Production Branch của Vercel trước khi bật lịch.
+1. Chuyển repository sang public trong **Settings → General → Change repository visibility**.
+2. Xác nhận `develop` là default branch trong **Settings → Branches**.
+3. Chọn Pages Source: GitHub Actions trong **Settings → Pages → Build and deployment**.
+4. Tạo ba secret và biến dry-run như phần trên; giữ `NOTIFICATION_DRY_RUN=true`.
+5. Push code lên `develop`; không cần tạo hoặc push nhánh `gh-pages` thủ công.
+6. Chờ CI và site deploy: workflow **CI** phải xanh, sau đó workflow
+   **Deploy GitHub Pages** phải hoàn tất.
+7. Chạy full sync tại **Actions → Data sync and Pages deploy → Run workflow**,
+   chọn nhánh `develop` và `mode=full`.
+8. Kiểm tra 30/60/90 ngày tại URL production; cả ba phạm vi phải có dữ liệu,
+   ngày tăng dần và không có lỗi tải manifest.
+9. Chạy Telegram dry-run tại **Actions → Telegram notification → Run workflow**,
+   chọn `mode=scheduled` trong khi `NOTIFICATION_DRY_RUN=true`.
+10. Bật gửi Telegram thật bằng cách đổi variable thành
+    `NOTIFICATION_DRY_RUN=false`, rồi chạy `mode=manual` với group test trước.
+11. Theo dõi lịch tự động ít nhất một cửa sổ quay và một cửa sổ Telegram trước
+    khi coi cutover hoàn tất.
 
-## 5. Cấu hình bí mật của Worker
+Nếu nút **Run workflow** không xuất hiện, workflow chưa có trên default branch
+hoặc tài khoản hiện tại không có quyền ghi repository.
 
-Sau lần deploy đầu, mở Cloudflare **Workers & Pages → app-weather-forecast-api →
-Settings → Variables and Secrets**.
+## Thao tác thủ công trên GitHub Actions
 
-Thêm dưới dạng **Secret**:
+### Làm mới dữ liệu
 
-- `NOTIFICATION_ADMIN_TOKEN`
-- `GITHUB_DISPATCH_TOKEN`
+Mở **Actions → Data sync and Pages deploy → Run workflow**:
 
-Thêm dưới dạng variable thường:
+- `mode=full`: tải và dựng lại tối đa 90 ngày; dùng cho lần đầu hoặc phục hồi.
+- `mode=incremental`: cập nhật hôm qua + hôm nay và giữ lịch sử tốt đã có.
 
-- `GITHUB_OWNER`
-- `GITHUB_REPO`
+Job chỉ đổi manifest sau khi history và đủ snapshot 30/60/90 vượt qua verifier.
+Nếu nguồn lỗi, job xuất bản trạng thái lỗi nhưng giữ manifest trước.
 
-`GITHUB_DISPATCH_TOKEN` nên là fine-grained personal access token chỉ truy cập
-repository này, với quyền **Contents: Read and write**. Endpoint
-`repository_dispatch` yêu cầu quyền Contents write; không cấp quyền organization
-hoặc repository khác. Xem
-[GitHub repository dispatch](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event).
+### Gửi Telegram
 
-Cloudflare che giá trị secret trong dashboard. `wrangler deploy --keep-vars` của
-workflow giữ lại các secret đã nhập khi deploy phiên bản code mới. Không đặt bốn
-giá trị này vào `wrangler.jsonc`.
+Mở **Actions → Telegram notification → Run workflow**:
 
-## 6. Chạy full sync staging
+- `mode=scheduled`: áp dụng điều kiện 19–25 ngày và ledger chống gửi lặp.
+- `mode=manual`: gửi báo cáo ngay; cố ý không ghi scheduled ledger nên chạy lại
+  có thể tạo thêm một tin.
 
-Trước khi kết nối frontend:
+Hai liên kết tương tự có sẵn trên dashboard; chúng chỉ mở giao diện Actions, không
+đưa secret vào trình duyệt.
 
-1. Mở **Actions → Cloud data sync → Run workflow**.
-2. Chọn nhánh chứa workflow và `mode=full`.
-3. Chờ job thành công; log phải cho biết số bản ghi và phiên bản, không có token.
-4. Mở URL Worker:
-   - `/api/health`
-   - `/api/gdb?days=30`
-   - `/api/gdb?days=60`
-   - `/api/gdb?days=90`
-5. Xác nhận ba snapshot có dữ liệu, ngày tăng dần và metadata freshness.
+## Lịch tự động và độ trễ
 
-Nếu `Run workflow` không xuất hiện, workflow phải tồn tại trên default branch và
-tài khoản cần quyền ghi repository. GitHub mô tả thao tác tại
-[Manually running a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow?tool=webui).
-
-Namespace staging có thể được giữ làm production sau khi smoke test. Nếu muốn
-tách namespace production, tạo namespace thứ hai, cập nhật
-`CLOUDFLARE_KV_NAMESPACE_ID`, chạy lại full sync rồi deploy Worker lại; không xóa
-namespace cũ trước khi cutover hoàn tất.
-
-## 7. Kết nối Vercel
-
-Trong Vercel dashboard:
-
-1. **Add New → Project**, import repository GitHub.
-2. Chọn **Root Directory** là `frontend`.
-3. Framework Preset: **Vite**.
-4. Build Command: `npm run build`.
-5. Output Directory: `dist`.
-6. Node.js Version: **20.x**. `frontend/package.json` cũng ghim `20.x`.
-7. Tạo duy nhất biến bắt buộc `VITE_API_BASE_URL` cho Production và Preview,
-   trỏ tới URL Worker HTTPS.
-8. Deploy. `frontend/vercel.json` đã cấu hình SPA fallback về `/index.html`.
-
-Thiết lập này theo tài liệu chính thức
-[Vite on Vercel](https://vercel.com/docs/frameworks/frontend/vite) và
-[Vercel project settings](https://vercel.com/docs/project-configuration/project-settings).
-
-Sau deploy đầu tiên, lấy production origin và branch-preview origin ổn định rồi:
-
-1. cập nhật GitHub variable `ALLOWED_ORIGINS` bằng danh sách origin chính xác;
-2. re-run job **Deploy Cloudflare Worker** gần nhất để áp dụng;
-3. thêm origin preview mới chỉ khi thật sự cần thao tác trên preview.
-
-Preview không nằm trong allowlist sẽ không gọi được Worker từ trình duyệt. Đây là
-hành vi bảo mật chủ ý, không dùng `*` để khắc phục.
-
-## 8. Smoke test preview và Telegram dry-run
-
-Trên URL Vercel preview:
-
-1. mở các lựa chọn 30/60/90 ngày;
-2. xác nhận bảng lịch sử vẫn hiện khi badge là chậm/cũ;
-3. chuyển tab nền rồi quay lại và kiểm tra snapshot được tải lại;
-4. trong DevTools Network, xác nhận chỉ có REST/304, không có EventSource;
-5. nhập sai khóa quản trị và xác nhận nhận lỗi an toàn;
-6. nhập khóa đúng, bấm **Làm mới dữ liệu**, quan sát
-   `Đã xếp hàng → Đang chạy trên cloud → Đã hoàn tất`;
-7. tải lại trang và xác nhận ô khóa trống; khóa không xuất hiện trong Local Storage,
-   Session Storage hoặc URL request.
-
-Worker chỉ cho một thao tác cùng loại hoạt động trong mỗi isolate và kiểm tra
-thêm record/lock trong KV. Tác vụ queued/running không cập nhật quá 30 phút được
-đánh dấu thất bại và giải phóng ở yêu cầu quản trị kế tiếp. KV không cung cấp
-compare-and-set toàn cục, vì vậy không nên gửi đồng thời thao tác quản trị từ
-nhiều trình duyệt; workflow concurrency vẫn là lớp chặn cuối trước khi job chạy.
-
-Giữ `NOTIFICATION_DRY_RUN=true`, sau đó mở **Actions → Cloud Telegram
-notification → Run workflow** với `mode=scheduled`. Kiểm tra log đánh giá đúng kỳ
-và danh sách ứng viên nhưng không gọi Telegram thật.
-
-Để thử gửi thật, nên dùng bot/group test trước:
-
-1. đổi `NOTIFICATION_DRY_RUN=false`;
-2. chạy workflow với `mode=manual`;
-3. xác nhận group nhận đúng một báo cáo;
-4. bấm lại trong UI chỉ khi chấp nhận có thêm một tin nhắn — manual send cố ý cho
-   phép lặp.
-
-## 9. Bật production và lịch tự động
-
-Sau khi smoke test đạt:
-
-1. đặt Production Branch của Vercel là nhánh production đã chọn;
-2. promote deployment đã kiểm tra hoặc deploy commit đó lên production;
-3. giữ `ALLOWED_ORIGINS` chỉ gồm các origin cần thiết;
-4. bật lại các workflow nếu trước đó đã disable;
-5. chỉ đặt `NOTIFICATION_DRY_RUN=false` khi Telegram đã được kiểm tra.
-
-Lịch hiện tại, theo `Asia/Ho_Chi_Minh`:
+Tất cả lịch dùng `Asia/Ho_Chi_Minh`:
 
 - Full sync: 03:17 mỗi ngày.
 - Incremental sync: mỗi 5 phút trong cửa sổ 17:47–19:02.
-- Telegram: mỗi 15 phút từ 09:07 đến 12:07; sau lần gửi thành công, các lần sau
-  trở thành no-op.
+- Telegram: mỗi 15 phút trong cửa sổ 09:07–12:07.
 
-Kết quả ngày đang quay thường chậm khoảng 5–10 phút. Dữ liệu hôm qua và lịch sử
-đã xuất bản không phải chờ job hiện tại; frontend tiếp tục hiển thị snapshot gần
-nhất.
+Lịch hosted runner có thể bị trễ khi hệ thống đông; đây không phải đồng hồ realtime.
+Kết quả ngày đang quay thường chậm 10–15 phút. Dữ liệu hôm qua và lịch sử đã xuất
+bản không cần chờ dữ liệu của ngày đang quay.
 
-## 10. Giám sát chi phí 0
+Với repository public, GitHub có thể tự disable scheduled workflow sau 60 ngày
+không có hoạt động repository. Nếu lịch không chạy, kiểm tra banner trong tab
+Actions, enable lại workflow và chạy thủ công một lần. Không dùng lịch này cho
+tác vụ cần thời điểm chính xác tuyệt đối.
 
-- **Vercel:** dùng Hobby chỉ cho dự án cá nhân/phi thương mại. Frontend này là
-  static, không dùng Vercel Functions. Theo dõi trang **Usage**; Hobby sẽ bị tạm
-  dừng khi vượt phần miễn phí thay vì tự chuyển sang on-demand billing. Xem
-  [Vercel Hobby](https://vercel.com/docs/plans/hobby).
-- **Cloudflare:** theo dõi Workers & Pages Analytics và KV Analytics. Workers Free
-  hiện có giới hạn request/ngày; KV Free có giới hạn read/write/ngày và dung lượng.
-  Xem số hiện hành tại [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
-  và [KV limits](https://developers.cloudflare.com/kv/platform/limits/).
-- **GitHub Actions:** repository public dùng standard runner miễn phí; repository
-  private dùng quota theo plan. Lịch hiện tại tạo nhiều job ngắn mỗi ngày, vì vậy
-  kiểm tra **Settings → Billing → Actions** hằng tuần trong tháng đầu. Xem
-  [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
-- Không bật Vercel Pro, Cloudflare Workers Paid hoặc GitHub larger runners nếu mục
-  tiêu vẫn là 0 đồng.
+## Hành vi Telegram latest-data
 
-## 11. Logs, xoay khóa và rollback
+Trong cửa sổ buổi sáng, Telegram đánh giá dữ liệu mới nhất đã xuất bản, kể cả khi
+snapshot hoàn chỉnh gần nhất là của hôm qua hoặc cũ hơn. Job không đợi một kỳ mới
+đang quay. Scheduled ledger bảo đảm mỗi target chỉ nhận một lần cho cùng event;
+target được lưu dưới dạng HMAC-SHA256, không phải chat ID thô.
 
-### Logs
+## Xác minh sau deploy
 
-- GitHub Actions: log phase, ngày nguồn, số record, version và kết quả Telegram đã
-  mask; không log header/token/chat ID đầy đủ.
-- Cloudflare: Worker Logs/Observability cho lỗi API và dispatch.
-- Vercel: Deployment/Build logs; frontend static không có server runtime log.
+1. Mở URL Pages và chọn lần lượt 30, 60, 90 ngày.
+2. Đối chiếu ngày mới nhất, trạng thái freshness và bảng lịch sử.
+3. Trong Actions, mở log data job và xác nhận version + record count, không có
+   secret hay chat ID.
+4. Chạy Telegram scheduled khi dry-run; sau đó gửi manual tới group test.
+5. Sau khi bật thật, chạy scheduled hai lần cho cùng event và xác nhận lần sau là
+   no-op/already delivered.
 
-### Xoay khóa
+Pages/CDN có thể cần vài phút sau deployment. Nếu vừa full sync xong mà trình
+duyệt vẫn thấy manifest cũ, chờ một nhịp cache rồi reload; không chạy nhiều full
+sync đồng thời.
 
-1. Tạo token mới tại nhà cung cấp.
-2. Cập nhật đúng GitHub secret hoặc Cloudflare Worker secret.
-3. Chạy smoke test tương ứng.
-4. Thu hồi token cũ sau khi test thành công.
+## Theo dõi chi phí và vận hành
 
-Xoay `NOTIFICATION_ADMIN_TOKEN` chỉ ở Cloudflare và password manager; người dùng
-phải nhập lại khóa mới trên dashboard. Xoay bot token phải cập nhật
-`TELEGRAM_BOT_TOKEN` trước khi thu hồi token cũ ở BotFather.
+- Giữ repository public nếu mục tiêu là dùng standard runner miễn phí.
+- Không bật larger runner hoặc tính năng trả phí.
+- Theo dõi **Actions → Usage** và thời lượng của ba workflow trong tháng đầu.
+- Tất cả writer dùng chung concurrency group; workflow đang chạy được xếp hàng,
+  không bị hủy giữa chừng.
+- Scheduled workflow có thể bị trễ hoặc bị disable theo quy tắc 60 ngày nêu trên.
 
-### Rollback
+## Rollback
 
-1. Disable hai workflow schedule nếu dữ liệu hoặc Telegram bất thường.
-2. Vercel: promote deployment production tốt gần nhất.
-3. Cloudflare: rollback Worker deployment tốt gần nhất trong dashboard.
-4. Nếu lỗi do snapshot mới, trỏ lại namespace/manifest đã kiểm tra hoặc chạy full
-   sync từ commit tốt; không xóa namespace/manifest cũ trước khi phục hồi.
-5. Giữ `NOTIFICATION_DRY_RUN=true` trong lúc điều tra Telegram.
+1. Disable `Data sync and Pages deploy` và `Telegram notification` nếu lỗi đang
+   tiếp diễn; đặt `NOTIFICATION_DRY_RUN=true`.
+2. Revert về commit tốt gần nhất trên `develop`, push và chờ **CI** +
+   **Deploy GitHub Pages**.
+3. Nếu bundle tốt nhưng dữ liệu mới sai, giữ hoặc khôi phục manifest trước trên
+   `gh-pages`; không xóa version mà manifest/previous pointer còn tham chiếu.
+4. Chạy full sync từ source tốt sau khi đã xác định nguyên nhân.
+5. Enable lại lịch, kiểm tra 30/60/90 và dry-run Telegram trước khi gửi thật.
 
-FastAPI/Docker còn trong repository chỉ để phát triển local và đối chiếu parity;
-không phải đường production được chọn. Xem [INSTALLATION.md](./INSTALLATION.md).
+Không force-push `gh-pages`. Workflow tự fetch, nạp lại và reapply thay đổi giới
+hạn tối đa ba lần; nếu vẫn xung đột, job dừng để tránh ghi đè state mới hơn.
+
+## Tài liệu liên quan
+
+- [Thiết lập Telegram](./TELEGRAM_GROUP.md)
+- [Local tùy chọn và kiểm thử](./INSTALLATION.md)
+- [Cấu hình Pages bằng workflow](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site)
+- [Chạy workflow thủ công](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+- [Sự kiện schedule và các giới hạn](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
