@@ -291,7 +291,10 @@ async def _fetch_outcomes(
 
 
 def _publisher(settings: Settings, store: JsonStore) -> SnapshotPublisher:
-    return SnapshotPublisher(store, max_value_bytes=settings.cloud_max_value_bytes)
+    return SnapshotPublisher(
+        store,
+        max_value_bytes=settings.publication_max_value_bytes,
+    )
 
 
 def _build_context(settings: Settings, now: datetime) -> SnapshotBuildContext:
@@ -329,7 +332,7 @@ async def _persist_operation(
     await store.put_json(
         operation_key(operation.request_id),
         operation.model_dump(mode="json", by_alias=True),
-        expiration_ttl=settings.cloud_operation_ttl_seconds,
+        expiration_ttl=settings.publication_operation_ttl_seconds,
     )
 
 

@@ -11,12 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, TypeVar
 
-import aiohttp
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.cloud.cloudflare_kv import CloudflareKVStore  # noqa: E402
 from app.cloud.data_jobs import DataJobResult, run_data_job  # noqa: E402
+from app.cloud.filesystem_store import FilesystemJsonStore  # noqa: E402
 from app.cloud.notification_jobs import (  # noqa: E402
     CloudNotificationResult,
     run_manual_notification,
@@ -34,56 +32,50 @@ def build_parser() -> argparse.ArgumentParser:
     sync = subparsers.add_parser("sync", help="publish data snapshots")
     sync.add_argument("--mode", choices=("full", "incremental"), required=True)
     sync.add_argument("--request-id")
+    sync.add_argument("--store-root", type=Path, required=True)
     telegram = subparsers.add_parser("telegram", help="send Telegram reports")
     telegram.add_argument("--mode", choices=("scheduled", "manual"), required=True)
     telegram.add_argument("--request-id")
+    telegram.add_argument("--store-root", type=Path, required=True)
     return parser
 
 
 async def _run_sync(args: argparse.Namespace, settings: Settings) -> DataJobResult:
-    config = settings.require_cloud_job_config()
-    timeout = aiohttp.ClientTimeout(total=settings.source_timeout_seconds + 5)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        store = CloudflareKVStore(
-            config.account_id,
-            config.namespace_id,
-            config.api_token,
-            session,
-        )
-        return await run_data_job(
-            settings,
-            store,
-            mode=args.mode,
-            request_id=args.request_id,
-            clock=lambda: datetime.now(settings.tzinfo),
-        )
+    config = settings.github_job_config()
+    store = FilesystemJsonStore(
+        args.store_root,
+        max_value_bytes=config.max_value_bytes,
+    )
+    return await run_data_job(
+        settings,
+        store,
+        mode=args.mode,
+        request_id=args.request_id,
+        clock=lambda: datetime.now(settings.tzinfo),
+    )
 
 
 async def _run_telegram(
     args: argparse.Namespace, settings: Settings
 ) -> CloudNotificationResult:
-    config = settings.require_cloud_job_config()
-    timeout = aiohttp.ClientTimeout(total=settings.notification_request_timeout_seconds + 5)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        store = CloudflareKVStore(
-            config.account_id,
-            config.namespace_id,
-            config.api_token,
-            session,
+    config = settings.github_job_config()
+    store = FilesystemJsonStore(
+        args.store_root,
+        max_value_bytes=config.max_value_bytes,
+    )
+    clock = lambda: datetime.now(settings.tzinfo)
+    if args.mode == "scheduled":
+        return await run_scheduled_notification(
+            settings, store, clock=clock
         )
-        clock = lambda: datetime.now(settings.tzinfo)
-        if args.mode == "scheduled":
-            return await run_scheduled_notification(
-                settings, store, clock=clock
-            )
-        if not args.request_id:
-            raise ValueError("--request-id is required for manual Telegram mode")
-        return await run_manual_notification(
-            settings,
-            store,
-            args.request_id,
-            clock=clock,
-        )
+    if not args.request_id:
+        raise ValueError("--request-id is required for manual Telegram mode")
+    return await run_manual_notification(
+        settings,
+        store,
+        args.request_id,
+        clock=clock,
+    )
 
 
 def _run_async(awaitable: Awaitable[ResultT], timeout: float) -> ResultT:
@@ -99,7 +91,9 @@ def main(
     args = build_parser().parse_args(argv)
     try:
         settings = settings_factory()
-        config = settings.require_cloud_job_config()
+        config = settings.github_job_config()
+        if not args.store_root.is_dir():
+            raise ValueError("publication root is not a directory")
         coroutine = (
             _run_sync(args, settings)
             if args.command == "sync"

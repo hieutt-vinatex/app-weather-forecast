@@ -36,6 +36,13 @@ class CloudJobConfig:
     job_timeout_seconds: float
 
 
+@dataclass(frozen=True)
+class GithubJobConfig:
+    max_value_bytes: int
+    operation_ttl_seconds: int
+    job_timeout_seconds: float
+
+
 class Settings(BaseSettings):
     """Strongly-typed application settings."""
 
@@ -78,6 +85,10 @@ class Settings(BaseSettings):
     cloud_max_value_bytes: int = 20 * 1024 * 1024
     cloud_operation_ttl_seconds: int = 86400
     cloud_job_timeout_seconds: float = 900.0
+
+    publication_max_value_bytes: int = 20 * 1024 * 1024
+    publication_operation_ttl_seconds: int = 86400
+    github_job_timeout_seconds: float = 1200.0
 
     # Server-side absence notifications. Delivery credentials remain on the
     # backend and are never exposed through the API/frontend.
@@ -159,6 +170,12 @@ class Settings(BaseSettings):
             raise ValueError("CLOUD_OPERATION_TTL_SECONDS must be >= 60")
         if self.cloud_job_timeout_seconds <= 0:
             raise ValueError("CLOUD_JOB_TIMEOUT_SECONDS must be > 0")
+        if self.publication_max_value_bytes < 1:
+            raise ValueError("PUBLICATION_MAX_VALUE_BYTES must be >= 1")
+        if self.publication_operation_ttl_seconds < 60:
+            raise ValueError("PUBLICATION_OPERATION_TTL_SECONDS must be >= 60")
+        if self.github_job_timeout_seconds <= 0:
+            raise ValueError("GITHUB_JOB_TIMEOUT_SECONDS must be > 0")
         if self.notification_min_days < 1:
             raise ValueError("NOTIFICATION_MIN_DAYS must be >= 1")
         if self.notification_max_days < self.notification_min_days:
@@ -224,6 +241,13 @@ class Settings(BaseSettings):
             max_value_bytes=self.cloud_max_value_bytes,
             operation_ttl_seconds=self.cloud_operation_ttl_seconds,
             job_timeout_seconds=self.cloud_job_timeout_seconds,
+        )
+
+    def github_job_config(self) -> GithubJobConfig:
+        return GithubJobConfig(
+            max_value_bytes=self.publication_max_value_bytes,
+            operation_ttl_seconds=self.publication_operation_ttl_seconds,
+            job_timeout_seconds=self.github_job_timeout_seconds,
         )
 
     @staticmethod

@@ -9,6 +9,7 @@ import pytest
 
 from app.cloud.contracts import JobRecord, PublicationManifest
 from app.cloud.data_jobs import full_sync, incremental_sync, run_data_job
+from app.cloud.filesystem_store import FilesystemJsonStore
 from app.cloud.publisher import SnapshotPublisher
 from app.services.gdb_service import DayOutcome
 from app.services.snapshot_builder import SnapshotBuildContext
@@ -186,6 +187,27 @@ async def test_malformed_current_draw_keeps_previous_manifest(monkeypatch):
     assert result.status == "failed"
     assert (await store.get_json("manifest:v1"))["version"] == old_manifest.version
     assert (await store.get_json("job-status:v1:data"))["status"] == "failed"
+
+
+async def test_failed_filesystem_sync_keeps_manifest_and_publishes_status(
+    monkeypatch, tmp_path
+):
+    store = FilesystemJsonStore(tmp_path)
+    settings = make_settings()
+    old_manifest = await publish_initial(store, date(2026, 10, 28))
+
+    async def fake_fetch(settings_arg, days):
+        del settings_arg
+        return [outcome_for(days[0], 10), outcome_for(days[1], 0, ok=False)]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", fake_fetch)
+
+    result = await incremental_sync(settings, store, clock=fixed_clock)
+
+    assert result.status == "failed"
+    assert (await store.get_json("manifest:v1"))["version"] == old_manifest.version
+    assert (await store.get_json("job-status:v1:data"))["status"] == "failed"
+    assert (tmp_path / "site/data/status.json").is_file()
 
 
 async def test_requested_operation_reaches_succeeded_with_ttl(monkeypatch):
