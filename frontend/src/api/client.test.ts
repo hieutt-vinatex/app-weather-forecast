@@ -5,11 +5,12 @@ import { makeSnapshot } from "../test/fixtures";
 
 const ACTIVE = "20261029T110500000000Z";
 const PREVIOUS = "20261029T105500000000Z";
+const STORED = "20261102T142829849363Z";
 
 function publication(version = ACTIVE, previousVersion: string | null = null) {
   const pointer = (itemVersion: string) => ({
     version: itemVersion,
-    generatedAt: "2026-10-29T11:05:00Z",
+    generatedAt: "2026-07-27T18:25:02+07:00",
     snapshotKeys: {
       "30": `snapshot:v1:${itemVersion}:30`,
       "60": `snapshot:v1:${itemVersion}:60`,
@@ -61,6 +62,31 @@ describe("static publication contracts", () => {
     expect(fetchFn.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({ cache: "force-cache" }),
     );
+  });
+
+  it("enriches a stored snapshot with publication freshness metadata", async () => {
+    const storedSnapshot = makeSnapshot(30, 11);
+    const storedMeta = storedSnapshot.meta as Partial<typeof storedSnapshot.meta>;
+    delete storedMeta.generatedAt;
+    delete storedMeta.freshnessStatus;
+    delete storedMeta.lastJobStatus;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(publication(STORED)), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(storedSnapshot), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchFn);
+
+    const result = await fetchSnapshot(30);
+
+    expect(result.data).toEqual(storedSnapshot.data);
+    expect(result.meta.generatedAt).toBe("2026-07-27T18:25:02+07:00");
+    expect(result.meta.freshnessStatus).toBe("current");
+    expect(result.meta.lastJobStatus).toBe("succeeded");
   });
 
   it("falls back to the previous publication when the active file is missing", async () => {

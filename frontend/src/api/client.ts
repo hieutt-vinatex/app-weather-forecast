@@ -7,7 +7,15 @@ import {
   type PublishedJobStatus,
 } from "./publication";
 
-const snapshotCache = new Map<string, SnapshotResponse>();
+type PublicationMetaKey =
+  | "generatedAt"
+  | "freshnessStatus"
+  | "lastJobStatus";
+type StoredSnapshotResponse = Omit<SnapshotResponse, "meta"> & {
+  meta: Omit<SnapshotResponse["meta"], PublicationMetaKey>;
+};
+
+const snapshotCache = new Map<string, StoredSnapshotResponse>();
 const latestRangeCache = new Map<RangeDays, SnapshotResponse>();
 
 export class ApiError extends Error {
@@ -24,7 +32,9 @@ export class ApiError extends Error {
 /**
  * Minimal structural validation of a snapshot payload before it enters cache.
  */
-export function isSnapshotResponse(value: unknown): value is SnapshotResponse {
+export function isSnapshotResponse(
+  value: unknown,
+): value is StoredSnapshotResponse {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   if (!Array.isArray(v.data)) return false;
@@ -42,16 +52,8 @@ export function isSnapshotResponse(value: unknown): value is SnapshotResponse {
     return false;
   }
   const meta = v.meta as Record<string, unknown>;
-  return (
-    typeof meta.requestedDays === "number" &&
-    typeof meta.snapshotVersion === "number" &&
-    typeof meta.generatedAt === "string" &&
-    !Number.isNaN(Date.parse(meta.generatedAt)) &&
-    ["current", "updating", "delayed", "stale"].includes(
-      String(meta.freshnessStatus),
-    ) &&
-    typeof meta.lastJobStatus === "string"
-  );
+  return typeof meta.requestedDays === "number" &&
+    typeof meta.snapshotVersion === "number";
 }
 
 export async function fetchSnapshot(
@@ -85,7 +87,7 @@ async function loadVersion(
   pointer: PublicationPointer,
   days: RangeDays,
   signal?: AbortSignal,
-): Promise<SnapshotResponse | null> {
+): Promise<StoredSnapshotResponse | null> {
   const cacheKey = `${pointer.version}:${days}`;
   const cached = snapshotCache.get(cacheKey);
   if (cached) return cached;
@@ -107,7 +109,7 @@ async function loadVersion(
 }
 
 function withLatestJobStatus(
-  snapshot: SnapshotResponse,
+  snapshot: StoredSnapshotResponse,
   pointer: PublicationPointer,
   status: PublishedJobStatus | null,
 ): SnapshotResponse {
@@ -117,17 +119,12 @@ function withLatestJobStatus(
       ? "updating"
       : lastJobStatus === "failed"
         ? "delayed"
-        : snapshot.meta.freshnessStatus;
-  if (
-    snapshot.meta.lastJobStatus === lastJobStatus &&
-    snapshot.meta.freshnessStatus === freshnessStatus
-  ) {
-    return snapshot;
-  }
+        : "current";
   return {
     ...snapshot,
     meta: {
       ...snapshot.meta,
+      generatedAt: pointer.generatedAt,
       lastJobStatus,
       freshnessStatus,
     },
