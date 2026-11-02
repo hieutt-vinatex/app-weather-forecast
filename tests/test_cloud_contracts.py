@@ -11,7 +11,10 @@ from app.cloud.publisher import SnapshotPublisher
 from app.services.gdb_service import DayOutcome
 from app.services.snapshot_builder import SnapshotBuildContext
 from app.utils.parser import PRIZE_COUNTS
-from scripts.verify_cloud_contracts import verify_fixture_directory
+from scripts.verify_cloud_contracts import (
+    verify_fixture_directory,
+    verify_publication_root,
+)
 
 
 class FixtureStore:
@@ -87,6 +90,7 @@ async def published_fixture(directory: Path) -> Path:
 
 
 def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(value, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
@@ -153,3 +157,129 @@ async def test_verifier_checks_manifest_statistics_and_frontend_record_shape(
     assert any("snapshot key for 90" in error for error in report.errors)
     assert any("statistics is missing keys" in error for error in report.errors)
     assert any("prizes must be an object" in error for error in report.errors)
+
+
+async def published_tree(root: Path) -> tuple[Path, str, str]:
+    flat_root = root / "flat"
+    flat_root.mkdir()
+    flat = await published_fixture(flat_root)
+    manifest = json.loads((flat / "manifest.json").read_text(encoding="utf-8"))
+    active = manifest["version"]
+    previous = "20261028T110500000000Z"
+    manifest["previousPublication"] = {
+        "version": previous,
+        "generatedAt": "2026-10-28T11:05:00Z",
+        "snapshotKeys": {
+            str(days): f"snapshot:v1:{previous}:{days}" for days in (30, 60, 90)
+        },
+        "sourceReferenceDate": "2026-10-28",
+        "complete": True,
+        "lastJob": manifest["lastJob"],
+    }
+    data_root = root / "publication/site/data"
+    active_root = data_root / "versions" / active
+    previous_root = data_root / "versions" / previous
+    active_root.mkdir(parents=True)
+    previous_root.mkdir(parents=True)
+    write_json(data_root / "manifest.json", manifest)
+    write_json(data_root / "status.json", manifest["lastJob"])
+    for filename in ("history.json", "snapshot-30.json", "snapshot-60.json", "snapshot-90.json"):
+        value = json.loads((flat / filename).read_text(encoding="utf-8"))
+        write_json(active_root / filename, value)
+        write_json(previous_root / filename, value)
+    (root / "publication/site/index.html").write_text("dashboard", encoding="utf-8")
+    write_json(
+        root / "publication/state/telegram-ledger.json",
+        {
+            "version": 1,
+            "events": {
+                "2026-10-29:absence": {
+                    "targets": {
+                        f"telegram:chat:{'a' * 64}": "2026-10-29T11:05:00+00:00"
+                    },
+                    "updatedAt": "2026-10-29T11:05:00+00:00",
+                }
+            },
+            "providers": {},
+        },
+    )
+    return root / "publication", active, previous
+
+
+async def test_publication_root_verifier_checks_active_previous_status_and_ledger(
+    tmp_path: Path,
+):
+    publication, _, _ = await published_tree(tmp_path)
+
+    report = verify_publication_root(publication)
+
+    assert report.valid_ranges == {30, 60, 90}
+    assert report.errors == []
+
+
+async def test_publication_root_verifier_rejects_broken_paths_and_retention(
+    tmp_path: Path,
+):
+    publication, active, previous = await published_tree(tmp_path)
+    data_root = publication / "site/data"
+    manifest_path = data_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["snapshotKeys"]["30"] = f"snapshot:v1:{previous}:30"
+    write_json(manifest_path, manifest)
+    (data_root / "versions" / previous / "snapshot-90.json").unlink()
+    for version in ("20261027T110500000000Z", "20261026T110500000000Z"):
+        version_root = data_root / "versions" / version
+        version_root.mkdir(parents=True)
+        for filename in ("history.json", "snapshot-30.json", "snapshot-60.json", "snapshot-90.json"):
+            (version_root / filename).write_text(
+                (data_root / "versions" / active / filename).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+    report = verify_publication_root(publication)
+
+    assert report.valid_ranges != {30, 60, 90}
+    assert any("active snapshot path" in error for error in report.errors)
+    assert any("previous snapshot" in error for error in report.errors)
+    assert any("retained versions" in error for error in report.errors)
+
+
+async def test_publication_root_verifier_rejects_invalid_status_ledger_and_secrets(
+    tmp_path: Path,
+):
+    publication, active, _ = await published_tree(tmp_path)
+    data_root = publication / "site/data"
+    history_path = data_root / "versions" / active / "history.json"
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    history.append(deepcopy(history[-1]))
+    write_json(history_path, history)
+    write_json(data_root / "status.json", {"kind": "data", "status": "unknown"})
+    write_json(
+        publication / "state/telegram-ledger.json",
+        {
+            "version": 1,
+            "events": {
+                "2026-10-29:absence": {
+                    "targets": {"telegram:chat:123456789": "not-a-time"}
+                }
+            },
+            "providers": {"telegram": {"chatId": "123456789"}},
+        },
+    )
+    secrets = (
+        "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+        "-1001234567890",
+        "ledger-hmac-secret-value",
+    )
+    (publication / "site/assets").mkdir()
+    (publication / "site/assets/app.js").write_text(
+        " ".join(secrets), encoding="utf-8"
+    )
+
+    report = verify_publication_root(publication, secret_values=secrets)
+
+    assert any("history cannot exceed 90" in error for error in report.errors)
+    assert any("status.json" in error for error in report.errors)
+    assert any("telegram-ledger.json" in error for error in report.errors)
+    assert any("secret material" in error for error in report.errors)
+    assert all(secret not in error for error in report.errors for secret in secrets)
