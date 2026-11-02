@@ -1,0 +1,17 @@
+{
+  "name": "Thống kê GĐB XSMB Realtime",
+  "short_name": "GĐB XSMB",
+  "description": "Thống kê thời gian thực 2 số cuối giải đặc biệt XSMB.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F5F7FA",
+  "theme_color": "#17CB74",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
