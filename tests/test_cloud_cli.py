@@ -16,7 +16,7 @@ REQUEST_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 def github_settings():
-    return make_settings()
+    return make_settings(notification_ledger_hmac_key="ledger-secret")
 
 
 def test_sync_cli_uses_publication_root_without_cloudflare_configuration(
@@ -150,3 +150,19 @@ def test_github_job_config_has_no_provider_credentials():
     assert config.operation_ttl_seconds == 86400
     assert config.job_timeout_seconds == 1200
     assert not hasattr(config, "api_token")
+
+
+def test_telegram_cli_requires_ledger_hmac_key(tmp_path: Path, capsys):
+    code = cloud_job.main(
+        [
+            "telegram",
+            "--mode",
+            "scheduled",
+            "--store-root",
+            str(tmp_path),
+        ],
+        settings_factory=make_settings,
+    )
+
+    assert code == 2
+    assert "NOTIFICATION_LEDGER_HMAC_KEY" in capsys.readouterr().err

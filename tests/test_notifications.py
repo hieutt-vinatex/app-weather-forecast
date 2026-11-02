@@ -155,6 +155,34 @@ def test_dispatcher_discovers_configured_destinations(tmp_path):
     assert all("secret" not in target.display for target in targets)
 
 
+def test_dispatcher_hmac_target_identifier_changes_with_secret(tmp_path):
+    settings = make_settings(
+        telegram_bot_token="telegram-secret",
+        telegram_chat_ids="123456789",
+    )
+    state = NotificationStateStore(str(tmp_path / "state.json"))
+    first = NotificationDispatcher(
+        settings,
+        state,
+        allowed_channels=frozenset({"telegram"}),
+        target_key_secret="ledger-secret",
+    ).targets()[0]
+    second = NotificationDispatcher(
+        settings,
+        state,
+        allowed_channels=frozenset({"telegram"}),
+        target_key_secret="different-secret",
+    ).targets()[0]
+
+    assert first.key == (
+        "telegram:chat:"
+        "a22a051196d83c49225db05dc40fdad69b501b2c29301214805246eaebc7d78d"
+    )
+    assert second.key != first.key
+    assert "123456789" not in first.key
+    assert "6789" not in first.key
+
+
 async def test_zalo_can_bootstrap_access_token_from_refresh_token(
     tmp_path, monkeypatch
 ):

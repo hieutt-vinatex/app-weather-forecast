@@ -10,6 +10,7 @@ import pytest
 
 from app.cloud.contracts import JobRecord, PublicationManifest
 from app.cloud.notification_jobs import (
+    _build_dispatcher,
     run_manual_notification,
     run_scheduled_notification,
 )
@@ -94,6 +95,10 @@ def target(name: str) -> NotificationTarget:
 
 def fixed_clock() -> datetime:
     return datetime(2026, 10, 15, 9, 7, tzinfo=TZ)
+
+
+def stale_clock() -> datetime:
+    return datetime(2026, 11, 2, 9, 7, tzinfo=TZ)
 
 
 def ready_snapshot():
@@ -208,6 +213,27 @@ async def test_partial_failure_retries_only_failed_target(monkeypatch):
     ]
 
 
+async def test_scheduled_notification_uses_latest_complete_snapshot_when_old(
+    monkeypatch,
+):
+    store = MemoryStore()
+    seed_snapshot(store)
+    dispatcher = FakeDispatcher([target("a")])
+    monkeypatch.setattr(
+        "app.cloud.notification_jobs._build_dispatcher",
+        lambda settings, state_store: dispatcher,
+    )
+
+    result = await run_scheduled_notification(
+        make_settings(notification_dry_run=False), store, clock=stale_clock
+    )
+
+    assert result.status == "delivered"
+    assert result.reference_date == "2026-10-14"
+    assert len(dispatcher.sent) == 1
+    assert "Kỳ dữ liệu: 14/10/2026" in dispatcher.sent[0][1]
+
+
 async def test_state_write_failure_after_send_allows_at_least_once_retry(monkeypatch):
     store = MemoryStore(fail_notification_writes=1)
     seed_snapshot(store)
@@ -269,6 +295,54 @@ async def test_manual_notification_allows_explicit_repeats(monkeypatch):
 
     assert first.status == second.status == "delivered"
     assert len(dispatcher.sent) == 2
+
+
+async def test_manual_notification_does_not_suppress_scheduled_delivery(monkeypatch):
+    store = MemoryStore()
+    seed_snapshot(store)
+    dispatcher = FakeDispatcher([target("a")])
+    monkeypatch.setattr(
+        "app.cloud.notification_jobs._build_dispatcher",
+        lambda settings, state_store: dispatcher,
+    )
+    settings = make_settings(notification_dry_run=False)
+
+    manual = await run_manual_notification(
+        settings,
+        store,
+        "123e4567-e89b-12d3-a456-426614174010",
+        clock=fixed_clock,
+    )
+    scheduled = await run_scheduled_notification(settings, store, clock=fixed_clock)
+
+    assert manual.status == "delivered"
+    assert scheduled.status == "delivered"
+    assert len(dispatcher.sent) == 2
+
+
+def test_cloud_dispatcher_is_telegram_only_and_uses_hmac_target_keys():
+    store = MemoryStore()
+    settings = make_settings(
+        notification_ledger_hmac_key="ledger-secret",
+        telegram_bot_token="telegram-secret",
+        telegram_chat_ids="123456789",
+        zalo_access_token="zalo-secret",
+        zalo_recipient_ids="zalo-user",
+        facebook_page_access_token="facebook-secret",
+        facebook_page_id="page-1",
+        facebook_messenger_recipient_ids="psid-1",
+    )
+
+    dispatcher = _build_dispatcher(settings, KVNotificationStateStore(store))
+    targets = dispatcher.targets()
+
+    assert [(item.channel, item.kind) for item in targets] == [("telegram", "chat")]
+    assert targets[0].key == (
+        "telegram:chat:"
+        "a22a051196d83c49225db05dc40fdad69b501b2c29301214805246eaebc7d78d"
+    )
+    assert "123456789" not in targets[0].key
+    assert "6789" not in targets[0].key
 
 
 async def test_cancelled_manual_notification_persists_timeout_failure(monkeypatch):

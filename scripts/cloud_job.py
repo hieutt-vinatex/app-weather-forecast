@@ -94,6 +94,8 @@ def main(
         config = settings.github_job_config()
         if not args.store_root.is_dir():
             raise ValueError("publication root is not a directory")
+        if args.command == "telegram":
+            settings.require_notification_ledger_hmac_key()
         coroutine = (
             _run_sync(args, settings)
             if args.command == "sync"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,10 +46,14 @@ class NotificationDispatcher:
         state_store: NotificationStateProtocol,
         *,
         sleep=asyncio.sleep,
+        allowed_channels: frozenset[str] | None = None,
+        target_key_secret: str | None = None,
     ) -> None:
         self._settings = settings
         self._state_store = state_store
         self._sleep = sleep
+        self._allowed_channels = allowed_channels
+        self._target_key_secret = target_key_secret
         self._session: aiohttp.ClientSession | None = None
         self._zalo_lock = asyncio.Lock()
         self._zalo_loaded = False
@@ -70,7 +75,9 @@ class NotificationDispatcher:
     def targets(self) -> list[NotificationTarget]:
         targets: list[NotificationTarget] = []
 
-        if self._secret(self._settings.telegram_bot_token):
+        if self._channel_allowed("telegram") and self._secret(
+            self._settings.telegram_bot_token
+        ):
             targets.extend(
                 self._target("telegram", "chat", chat_id)
                 for chat_id in self._settings.telegram_chat_id_list
@@ -84,7 +91,7 @@ class NotificationDispatcher:
                 and self._secret(self._settings.zalo_refresh_token)
             )
         )
-        if has_zalo_auth:
+        if self._channel_allowed("zalo") and has_zalo_auth:
             targets.extend(
                 self._target("zalo", "oa_user", user_id)
                 for user_id in self._settings.zalo_recipient_id_list
@@ -92,6 +99,8 @@ class NotificationDispatcher:
 
         facebook_page_id = self._settings.facebook_page_id.strip()
         if (
+            self._channel_allowed("facebook")
+            and
             self._secret(self._settings.facebook_page_access_token)
             and facebook_page_id
         ):
@@ -367,11 +376,20 @@ class NotificationDispatcher:
         raw = value.get_secret_value().strip()
         return raw or None
 
-    @staticmethod
-    def _target(channel: str, kind: str, recipient: str) -> NotificationTarget:
-        digest = hashlib.sha256(
-            f"{channel}:{kind}:{recipient}".encode("utf-8")
-        ).hexdigest()[:16]
+    def _channel_allowed(self, channel: str) -> bool:
+        return self._allowed_channels is None or channel in self._allowed_channels
+
+    def _target(self, channel: str, kind: str, recipient: str) -> NotificationTarget:
+        identity = f"{channel}:{kind}:{recipient}".encode("utf-8")
+        digest = (
+            hmac.new(
+                self._target_key_secret.encode("utf-8"),
+                identity,
+                hashlib.sha256,
+            ).hexdigest()
+            if self._target_key_secret is not None
+            else hashlib.sha256(identity).hexdigest()[:16]
+        )
         suffix = recipient[-4:] if len(recipient) > 4 else recipient
         return NotificationTarget(
             key=f"{channel}:{kind}:{digest}",

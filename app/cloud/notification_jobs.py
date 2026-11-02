@@ -19,12 +19,11 @@ from app.cloud.contracts import (
     PublicationManifest,
     operation_key,
 )
-from app.cloud.notification_store import KVNotificationStateStore
+from app.cloud.notification_store import JsonNotificationStateStore
 from app.cloud.publisher import StorageReadError
 from app.config import Settings
 from app.notifications.channels import NotificationDispatcher
 from app.notifications.models import (
-    evaluate_snapshot,
     evaluate_snapshot_now,
     format_alert_message,
     format_immediate_report_message,
@@ -59,7 +58,7 @@ async def run_scheduled_notification(
         started_at=now,
     )
     await _persist_job(store, running)
-    state = KVNotificationStateStore(store)
+    state = JsonNotificationStateStore(store)
     dispatcher = _build_dispatcher(settings, state)
     try:
         await dispatcher.start()
@@ -146,7 +145,7 @@ async def run_manual_notification(
         ),
     )
 
-    state = KVNotificationStateStore(store)
+    state = JsonNotificationStateStore(store)
     dispatcher = _build_dispatcher(settings, state)
     try:
         await dispatcher.start()
@@ -216,12 +215,11 @@ async def _run_scheduled(
     now: datetime,
 ) -> CloudNotificationResult:
     snapshot = await _load_snapshot(store)
-    evaluation = evaluate_snapshot(
+    evaluation = evaluate_snapshot_now(
         snapshot,
         now=now,
         min_days=settings.notification_min_days,
         max_days=settings.notification_max_days,
-        send_time=settings.notification_send_time_value,
     )
     reference_date = (
         evaluation.reference_date.isoformat()
@@ -384,7 +382,12 @@ def _build_dispatcher(
     settings: Settings,
     state_store: NotificationStateProtocol,
 ) -> NotificationDispatcher:
-    return NotificationDispatcher(settings, state_store)
+    return NotificationDispatcher(
+        settings,
+        state_store,
+        allowed_channels=frozenset({"telegram"}),
+        target_key_secret=settings.require_notification_ledger_hmac_key(),
+    )
 
 
 def _now(settings: Settings, clock: Clock) -> datetime:
@@ -409,7 +412,7 @@ async def _persist_operation(
     await store.put_json(
         operation_key(operation.request_id),
         operation.model_dump(mode="json", by_alias=True),
-        expiration_ttl=settings.cloud_operation_ttl_seconds,
+        expiration_ttl=settings.publication_operation_ttl_seconds,
     )
 
 

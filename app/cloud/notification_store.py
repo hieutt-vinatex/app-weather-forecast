@@ -1,4 +1,4 @@
-"""Notification idempotency state stored in Workers KV."""
+"""Notification idempotency state stored through the JSON store contract."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from app.cloud.contracts import JsonStore, NOTIFICATION_STATE_KEY
 from app.cloud.publisher import StorageReadError
 
 
-class KVNotificationStateStore:
+class JsonNotificationStateStore:
     def __init__(self, store: JsonStore) -> None:
         self._store = store
         self._lock = asyncio.Lock()
@@ -98,3 +98,6 @@ class KVNotificationStateStore:
         for key in list(events):
             if key.split(":", 1)[0] < cutoff:
                 del events[key]
+
+
+KVNotificationStateStore = JsonNotificationStateStore

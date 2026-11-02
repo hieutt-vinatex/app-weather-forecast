@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     notification_max_retries: int = 2
     notification_state_path: str = ".data/notification-state.json"
     notification_admin_token: SecretStr | None = None
+    notification_ledger_hmac_key: SecretStr | None = None
 
     telegram_bot_token: SecretStr | None = None
     telegram_chat_ids: str = ""
@@ -249,6 +250,16 @@ class Settings(BaseSettings):
             operation_ttl_seconds=self.publication_operation_ttl_seconds,
             job_timeout_seconds=self.github_job_timeout_seconds,
         )
+
+    def require_notification_ledger_hmac_key(self) -> str:
+        value = (
+            self.notification_ledger_hmac_key.get_secret_value().strip()
+            if self.notification_ledger_hmac_key is not None
+            else ""
+        )
+        if not value:
+            raise ValueError("Missing notification configuration: NOTIFICATION_LEDGER_HMAC_KEY")
+        return value
 
     @staticmethod
     def _csv(value: str) -> List[str]:
