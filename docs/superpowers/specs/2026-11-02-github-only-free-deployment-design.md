@@ -1,7 +1,8 @@
 # Thiết kế triển khai GitHub-only miễn phí
 
 **Ngày:** 2026-11-02  
-**Trạng thái:** Bản thiết kế chờ người dùng phê duyệt  
+**Trạng thái:** Đã được người dùng phê duyệt
+
 **Phương án đã chọn:** GitHub Pages bằng custom GitHub Actions + nhánh trạng
 thái/xuất bản `gh-pages`
 
@@ -169,6 +170,7 @@ nhánh trạng thái/xuất bản do Actions quản lý, có cấu trúc logic:
     .nojekyll
     data/
       manifest.json
+      status.json
       versions/<version>/history.json
       versions/<version>/snapshot-30.json
       versions/<version>/snapshot-60.json
@@ -182,6 +184,10 @@ vào Pages artifact. `history.json` chỉ chứa kết quả xổ số đã chu�
 `telegram-ledger.json` chỉ chứa event key, thời gian và định danh người nhận đã
 HMAC-SHA256 bằng một secret riêng; không lưu `chat_id`, bot token, tên người nhận
 hoặc provider token. Ledger giữ tối đa 120 ngày.
+
+`site/data/status.json` chỉ chứa trạng thái job dữ liệu đã làm sạch. Nó được cập
+nhật cả khi sync thất bại để frontend có thể hạ một kết quả còn mới từ `current`
+xuống `delayed`, trong khi `manifest.json` và các snapshot active vẫn giữ nguyên.
 
 Publication tiếp tục theo nguyên tắc manifest-last:
 
@@ -233,7 +239,8 @@ Pages build khác. Job deploy có `pages: write`, `id-token: write` và environm
 - Job đọc history từ `gh-pages`, tái sử dụng `run_data_job` và
   `SnapshotPublisher` qua một `FilesystemJsonStore`, rồi phát hành version mới.
 - Nếu nguồn lỗi, schema sai hoặc current draw không hợp lệ, job thất bại và
-  snapshot cũ vẫn phục vụ bình thường.
+  snapshot cũ vẫn phục vụ bình thường; job vẫn phát hành `status.json` an toàn
+  với `status=failed` nhưng không thay active manifest.
 - Sau khi commit data thành công, cùng workflow upload `gh-pages/site/` và chạy
   custom Pages deployment; nếu deployment lỗi, nhánh vẫn giữ version mới và lần
   chạy tiếp theo có thể phát hành lại.
