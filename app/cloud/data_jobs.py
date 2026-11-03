@@ -10,10 +10,14 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from app.cloud.contracts import (
+    DAILY_DATA_UPDATE_KEY,
     DATA_JOB_STATUS_KEY,
+    MANIFEST_KEY,
+    DailyDataUpdateState,
     JobRecord,
     JsonStore,
     OperationRecord,
+    PublicationManifest,
     operation_key,
 )
 from app.cloud.publisher import SnapshotPublisher
@@ -51,6 +55,116 @@ async def incremental_sync(
     clock: Clock,
 ) -> DataJobResult:
     return await _sync(settings, store, mode="incremental", clock=clock)
+
+
+async def run_scheduled_data_job(
+    settings: Settings,
+    store: JsonStore,
+    *,
+    clock: Clock,
+) -> DataJobResult:
+    now = _now(settings, clock)
+    if not _inside_scheduled_window(now):
+        return DataJobResult(
+            status="outside_window",
+            mode="scheduled",
+            version=None,
+            record_count=0,
+        )
+
+    business_date = now.date()
+    state = await _load_daily_state(store)
+    manifest = await _load_manifest(store)
+    if (
+        manifest is not None
+        and manifest.source_reference_date == business_date
+    ):
+        healed = _successful_daily_state(
+            state,
+            business_date=business_date,
+            attempted_at=now,
+            version=manifest.version,
+            source_reference_date=manifest.source_reference_date,
+            increment_attempt=False,
+        )
+        await _persist_daily_state(store, healed)
+        return DataJobResult(
+            status="already_succeeded",
+            mode="scheduled",
+            version=manifest.version,
+            record_count=manifest.last_job.record_count,
+        )
+
+    if (
+        state is not None
+        and state.business_date == business_date
+        and state.status == "succeeded"
+    ):
+        # A succeeded state without a matching manifest is not authoritative.
+        # Continue with a new attempt so publication and state converge again.
+        state = state.model_copy(
+            update={
+                "status": "failed",
+                "last_reason": "publication_mismatch",
+                "published_version": None,
+                "source_reference_date": None,
+                "initial_failure_at": state.initial_failure_at or now,
+            }
+        )
+
+    pending = _pending_daily_state(
+        state,
+        business_date=business_date,
+        attempted_at=now,
+    )
+    await _persist_daily_state(store, pending)
+    frozen_clock = lambda: now
+    try:
+        result = await incremental_sync(settings, store, clock=frozen_clock)
+    except asyncio.CancelledError:
+        await _persist_daily_state(
+            store,
+            _failed_daily_state(pending, failed_at=now, reason="job_timeout"),
+        )
+        raise
+
+    if result.status != "succeeded":
+        await _persist_daily_state(
+            store,
+            _failed_daily_state(
+                pending,
+                failed_at=now,
+                reason=result.reason or "job_failed",
+            ),
+        )
+        return result
+
+    published = await _load_manifest(store)
+    if published is None or published.source_reference_date != business_date:
+        failed = _failed_daily_state(
+            pending,
+            failed_at=now,
+            reason="publication_mismatch",
+        )
+        await _persist_daily_state(store, failed)
+        return DataJobResult(
+            status="failed",
+            mode=result.mode,
+            version=None,
+            record_count=0,
+            reason="publication_mismatch",
+        )
+
+    succeeded = _successful_daily_state(
+        pending,
+        business_date=business_date,
+        attempted_at=now,
+        version=published.version,
+        source_reference_date=published.source_reference_date,
+        increment_attempt=False,
+    )
+    await _persist_daily_state(store, succeeded)
+    return result
 
 
 async def run_data_job(
@@ -124,6 +238,12 @@ async def run_data_job(
             ),
         )
         await _persist_operation(settings, store, terminal)
+    if result.status in {"succeeded", "no_change"}:
+        await _record_manual_recovery(
+            store,
+            business_date=created_at.date(),
+            attempted_at=created_at,
+        )
     return result
 
 
@@ -315,6 +435,121 @@ def _now(settings: Settings, clock: Clock) -> datetime:
     if value.tzinfo is None:
         raise ValueError("clock must return a timezone-aware datetime")
     return value.astimezone(settings.tzinfo)
+
+
+def _inside_scheduled_window(now: datetime) -> bool:
+    return (now.hour, now.minute) >= (18, 30)
+
+
+async def _load_daily_state(store: JsonStore) -> DailyDataUpdateState | None:
+    raw = await store.get_json(DAILY_DATA_UPDATE_KEY)
+    if raw is None:
+        return None
+    return DailyDataUpdateState.model_validate(raw)
+
+
+async def _load_manifest(store: JsonStore) -> PublicationManifest | None:
+    raw = await store.get_json(MANIFEST_KEY)
+    if raw is None:
+        return None
+    return PublicationManifest.model_validate(raw)
+
+
+def _pending_daily_state(
+    previous: DailyDataUpdateState | None,
+    *,
+    business_date: date,
+    attempted_at: datetime,
+) -> DailyDataUpdateState:
+    same_day = previous is not None and previous.business_date == business_date
+    return DailyDataUpdateState(
+        business_date=business_date,
+        status="pending",
+        attempt_count=(previous.attempt_count if same_day else 0) + 1,
+        first_attempt_at=(
+            previous.first_attempt_at if same_day else attempted_at
+        ),
+        last_attempt_at=attempted_at,
+        initial_failure_at=(
+            previous.initial_failure_at if same_day else None
+        ),
+        last_reason=previous.last_reason if same_day else None,
+    )
+
+
+def _failed_daily_state(
+    pending: DailyDataUpdateState,
+    *,
+    failed_at: datetime,
+    reason: str,
+) -> DailyDataUpdateState:
+    return DailyDataUpdateState(
+        business_date=pending.business_date,
+        status="failed",
+        attempt_count=pending.attempt_count,
+        first_attempt_at=pending.first_attempt_at,
+        last_attempt_at=failed_at,
+        initial_failure_at=pending.initial_failure_at or failed_at,
+        last_reason=reason,
+    )
+
+
+def _successful_daily_state(
+    previous: DailyDataUpdateState | None,
+    *,
+    business_date: date,
+    attempted_at: datetime,
+    version: str,
+    source_reference_date: date,
+    increment_attempt: bool,
+) -> DailyDataUpdateState:
+    same_day = previous is not None and previous.business_date == business_date
+    prior_attempts = previous.attempt_count if same_day else 0
+    return DailyDataUpdateState(
+        business_date=business_date,
+        status="succeeded",
+        attempt_count=prior_attempts + (1 if increment_attempt else 0),
+        first_attempt_at=(
+            previous.first_attempt_at if same_day else attempted_at
+        ),
+        last_attempt_at=attempted_at,
+        initial_failure_at=(
+            previous.initial_failure_at if same_day else None
+        ),
+        published_version=version,
+        source_reference_date=source_reference_date,
+    )
+
+
+async def _record_manual_recovery(
+    store: JsonStore,
+    *,
+    business_date: date,
+    attempted_at: datetime,
+) -> None:
+    manifest = await _load_manifest(store)
+    if manifest is None or manifest.source_reference_date != business_date:
+        return
+    previous = await _load_daily_state(store)
+    state = _successful_daily_state(
+        previous,
+        business_date=business_date,
+        attempted_at=attempted_at,
+        version=manifest.version,
+        source_reference_date=manifest.source_reference_date,
+        increment_attempt=True,
+    )
+    await _persist_daily_state(store, state)
+
+
+async def _persist_daily_state(
+    store: JsonStore,
+    state: DailyDataUpdateState,
+) -> None:
+    await store.put_json(
+        DAILY_DATA_UPDATE_KEY,
+        state.model_dump(mode="json", by_alias=True),
+    )
 
 
 async def _persist_job(store: JsonStore, job: JobRecord) -> None:

@@ -89,6 +89,62 @@ async def test_run_sync_constructs_filesystem_store(monkeypatch, tmp_path: Path)
     assert (tmp_path / "site/data/status.json").is_file()
 
 
+async def test_run_sync_routes_scheduled_mode_to_guarded_job(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    async def fake_scheduled(settings, store, *, clock):
+        captured["settings"] = settings
+        captured["store"] = store
+        captured["clock"] = clock()
+        return DataJobResult(
+            status="already_succeeded",
+            mode="scheduled",
+            version="v1",
+            record_count=90,
+        )
+
+    async def unexpected_manual(*args, **kwargs):
+        raise AssertionError(f"unexpected manual job: {args} {kwargs}")
+
+    monkeypatch.setattr(cloud_job, "run_scheduled_data_job", fake_scheduled)
+    monkeypatch.setattr(cloud_job, "run_data_job", unexpected_manual)
+    args = argparse.Namespace(
+        mode="scheduled",
+        request_id=None,
+        store_root=tmp_path,
+    )
+
+    result = await cloud_job._run_sync(args, github_settings())
+
+    assert result.status == "already_succeeded"
+    assert isinstance(captured["store"], FilesystemJsonStore)
+
+
+@pytest.mark.parametrize("status", ["already_succeeded", "outside_window"])
+def test_scheduled_data_noop_statuses_exit_zero(monkeypatch, tmp_path, status):
+    async def fake_run_sync(args, settings):
+        del args, settings
+        return DataJobResult(
+            status=status,
+            mode="scheduled",
+            version=None,
+            record_count=0,
+        )
+
+    monkeypatch.setattr(cloud_job, "_run_sync", fake_run_sync)
+
+    assert cloud_job.main(
+        [
+            "sync",
+            "--mode",
+            "scheduled",
+            "--store-root",
+            str(tmp_path),
+        ],
+        settings_factory=github_settings,
+    ) == 0
+
+
 def test_telegram_cli_noop_after_recorded_success_returns_zero(
     monkeypatch, tmp_path: Path
 ):

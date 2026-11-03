@@ -3,17 +3,32 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncio
 import pytest
 
-from app.cloud.contracts import JobRecord, PublicationManifest
-from app.cloud.data_jobs import full_sync, incremental_sync, run_data_job
+from app.cloud.contracts import (
+    DAILY_DATA_UPDATE_KEY,
+    DailyDataUpdateState,
+    JobRecord,
+    PublicationManifest,
+)
+from app.cloud.data_jobs import (
+    DataJobResult,
+    full_sync,
+    incremental_sync,
+    run_data_job,
+    run_scheduled_data_job,
+)
 from app.cloud.filesystem_store import FilesystemJsonStore
 from app.cloud.publisher import SnapshotPublisher
 from app.services.gdb_service import DayOutcome
 from app.services.snapshot_builder import SnapshotBuildContext
 from tests.conftest import make_settings
+
+
+TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 class MemoryStore:
@@ -266,3 +281,252 @@ async def test_cancelled_data_job_persists_timeout_failure(monkeypatch):
     assert (await store.get_json("job-status:v1:data"))["reason"] == "job_timeout"
     operation = await store.get_json(f"operation:v1:{request_id}")
     assert operation["status"] == "failed"
+
+
+def local_clock(hour: int, minute: int, *, day: int = 29):
+    return lambda: datetime(2026, 10, day, hour, minute, tzinfo=TZ)
+
+
+async def test_scheduled_data_succeeds_once_then_skips_later_retry(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    await publish_initial(store, date(2026, 10, 28))
+    requested: list[date] = []
+
+    async def fake_fetch(settings_arg, days):
+        assert settings_arg is settings
+        requested.extend(days)
+        return [outcome_for(day, index) for index, day in enumerate(days)]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", fake_fetch)
+
+    first = await run_scheduled_data_job(
+        settings, store, clock=local_clock(18, 45)
+    )
+    first_state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+    requested_after_first = list(requested)
+    second = await run_scheduled_data_job(
+        settings, store, clock=local_clock(19, 45)
+    )
+    second_state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+
+    assert first.status == "succeeded"
+    assert first_state.status == "succeeded"
+    assert first_state.attempt_count == 1
+    assert first_state.source_reference_date == date(2026, 10, 29)
+    assert first_state.published_version == first.version
+    assert requested_after_first == [date(2026, 10, 28), date(2026, 10, 29)]
+    assert second.status == "already_succeeded"
+    assert requested == requested_after_first
+    assert second_state.attempt_count == 1
+
+
+@pytest.mark.parametrize(("hour", "minute", "day"), [(18, 20, 29), (0, 5, 30)])
+async def test_scheduled_data_outside_window_never_fetches_or_changes_state(
+    monkeypatch, hour: int, minute: int, day: int
+):
+    store = MemoryStore()
+    settings = make_settings()
+    previous = DailyDataUpdateState(
+        business_date=date(2026, 10, 28),
+        status="failed",
+        attempt_count=1,
+        first_attempt_at=datetime(2026, 10, 28, 18, 45, tzinfo=TZ),
+        last_attempt_at=datetime(2026, 10, 28, 18, 46, tzinfo=TZ),
+        initial_failure_at=datetime(2026, 10, 28, 18, 46, tzinfo=TZ),
+        last_reason="invalid_upstream_data",
+    )
+    await store.put_json(
+        DAILY_DATA_UPDATE_KEY,
+        previous.model_dump(mode="json", by_alias=True),
+    )
+
+    async def unexpected_fetch(settings_arg, days):
+        raise AssertionError(f"unexpected fetch: {settings_arg} {days}")
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", unexpected_fetch)
+
+    result = await run_scheduled_data_job(
+        settings, store, clock=local_clock(hour, minute, day=day)
+    )
+
+    assert result.status == "outside_window"
+    assert DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    ) == previous
+
+
+async def test_scheduled_data_rejects_naive_clock_before_fetch(monkeypatch):
+    store = MemoryStore()
+
+    async def unexpected_fetch(settings_arg, days):
+        raise AssertionError(f"unexpected fetch: {settings_arg} {days}")
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", unexpected_fetch)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await run_scheduled_data_job(
+            make_settings(),
+            store,
+            clock=lambda: datetime(2026, 10, 29, 18, 45),
+        )
+
+    assert await store.get_json(DAILY_DATA_UPDATE_KEY) is None
+
+
+async def test_scheduled_data_heals_state_from_current_manifest_without_fetch(
+    monkeypatch,
+):
+    store = MemoryStore()
+    settings = make_settings()
+    manifest = await publish_initial(store, date(2026, 10, 29))
+
+    async def unexpected_fetch(settings_arg, days):
+        raise AssertionError(f"unexpected fetch: {settings_arg} {days}")
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", unexpected_fetch)
+
+    result = await run_scheduled_data_job(
+        settings, store, clock=local_clock(18, 45)
+    )
+    state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+
+    assert result.status == "already_succeeded"
+    assert result.version == manifest.version
+    assert state.status == "succeeded"
+    assert state.attempt_count == 0
+    assert state.published_version == manifest.version
+
+
+async def test_scheduled_failure_preserves_manifest_then_retry_recovers(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    old_manifest = await publish_initial(store, date(2026, 10, 28))
+    calls = 0
+
+    async def changing_fetch(settings_arg, days):
+        nonlocal calls
+        del settings_arg
+        calls += 1
+        if calls == 1:
+            return [outcome_for(days[0], 10), outcome_for(days[1], 0, ok=False)]
+        return [outcome_for(day, 20 + index) for index, day in enumerate(days)]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", changing_fetch)
+
+    failed = await run_scheduled_data_job(
+        settings, store, clock=local_clock(18, 45)
+    )
+    failed_state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+    manifest_after_failure = await store.get_json("manifest:v1")
+    recovered = await run_scheduled_data_job(
+        settings, store, clock=local_clock(19, 45)
+    )
+    recovered_state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+    skipped = await run_scheduled_data_job(
+        settings, store, clock=local_clock(20, 45)
+    )
+
+    assert failed.status == "failed"
+    assert manifest_after_failure["version"] == old_manifest.version
+    assert failed_state.status == "failed"
+    assert failed_state.attempt_count == 1
+    assert failed_state.last_reason == "invalid_upstream_data"
+    assert failed_state.initial_failure_at is not None
+    assert old_manifest.version != recovered.version
+    assert recovered_state.status == "succeeded"
+    assert recovered_state.attempt_count == 2
+    assert recovered_state.initial_failure_at == failed_state.initial_failure_at
+    assert skipped.status == "already_succeeded"
+    assert calls == 2
+
+
+async def test_cancelled_scheduled_data_records_safe_timeout(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    await publish_initial(store, date(2026, 10, 28))
+    entered = asyncio.Event()
+
+    async def never_finishes(settings_arg, days):
+        del settings_arg, days
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", never_finishes)
+    task = asyncio.create_task(
+        run_scheduled_data_job(settings, store, clock=local_clock(18, 45))
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    raw = await store.get_json(DAILY_DATA_UPDATE_KEY)
+    state = DailyDataUpdateState.model_validate(raw)
+    assert state.status == "failed"
+    assert state.last_reason == "job_timeout"
+    assert "exception" not in raw
+
+
+async def test_manual_current_publication_records_recovery(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+
+    async def fake_fetch(settings_arg, days):
+        del settings_arg
+        return [outcome_for(day, index) for index, day in enumerate(days)]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", fake_fetch)
+
+    result = await run_data_job(
+        settings,
+        store,
+        mode="full",
+        clock=local_clock(18, 0),
+    )
+    state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+
+    assert result.status == "succeeded"
+    assert state.status == "succeeded"
+    assert state.business_date == date(2026, 10, 29)
+    assert state.attempt_count == 1
+
+
+async def test_manual_old_publication_does_not_mark_today_succeeded(monkeypatch):
+    store = MemoryStore()
+    settings = make_settings()
+    old_manifest = await publish_initial(store, date(2026, 10, 28))
+
+    async def fake_full_sync(settings_arg, store_arg, *, clock):
+        del settings_arg, store_arg, clock
+        return DataJobResult(
+            status="succeeded",
+            mode="full",
+            version=old_manifest.version,
+            record_count=90,
+        )
+
+    monkeypatch.setattr("app.cloud.data_jobs.full_sync", fake_full_sync)
+
+    result = await run_data_job(
+        settings,
+        store,
+        mode="full",
+        clock=local_clock(18, 0),
+    )
+
+    assert result.status == "succeeded"
+    assert await store.get_json(DAILY_DATA_UPDATE_KEY) is None

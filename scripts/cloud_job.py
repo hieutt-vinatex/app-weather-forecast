@@ -13,7 +13,11 @@ from typing import Awaitable, Callable, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.cloud.data_jobs import DataJobResult, run_data_job  # noqa: E402
+from app.cloud.data_jobs import (  # noqa: E402
+    DataJobResult,
+    run_data_job,
+    run_scheduled_data_job,
+)
 from app.cloud.filesystem_store import FilesystemJsonStore  # noqa: E402
 from app.cloud.notification_jobs import (  # noqa: E402
     CloudNotificationResult,
@@ -30,7 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run finite cloud jobs")
     subparsers = parser.add_subparsers(dest="command", required=True)
     sync = subparsers.add_parser("sync", help="publish data snapshots")
-    sync.add_argument("--mode", choices=("full", "incremental"), required=True)
+    sync.add_argument(
+        "--mode",
+        choices=("scheduled", "full", "incremental"),
+        required=True,
+    )
     sync.add_argument("--request-id")
     sync.add_argument("--store-root", type=Path, required=True)
     telegram = subparsers.add_parser("telegram", help="send Telegram reports")
@@ -46,12 +54,15 @@ async def _run_sync(args: argparse.Namespace, settings: Settings) -> DataJobResu
         args.store_root,
         max_value_bytes=config.max_value_bytes,
     )
+    clock = lambda: datetime.now(settings.tzinfo)
+    if args.mode == "scheduled":
+        return await run_scheduled_data_job(settings, store, clock=clock)
     return await run_data_job(
         settings,
         store,
         mode=args.mode,
         request_id=args.request_id,
-        clock=lambda: datetime.now(settings.tzinfo),
+        clock=clock,
     )
 
 
@@ -129,6 +140,8 @@ def main(
     successful_statuses = {
         "succeeded",
         "no_change",
+        "already_succeeded",
+        "outside_window",
         "delivered",
         "already_delivered",
         "dry_run",
