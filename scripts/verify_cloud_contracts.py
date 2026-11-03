@@ -13,6 +13,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from pydantic import ValidationError
+
+from app.cloud.contracts import DailyDataUpdateState
+
 
 VALID_RANGES = (30, 60, 90)
 MAX_VALUE_BYTES = 20 * 1024 * 1024
@@ -181,6 +185,22 @@ def verify_publication_root(
         )
         report.errors.extend(ledger_load_errors)
         report.errors.extend(_validate_telegram_ledger(ledger))
+
+    daily_state_path = root / "state/daily-data-update.json"
+    if daily_state_path.exists():
+        daily_state, daily_state_load_errors = _load_json_value(
+            daily_state_path,
+            max_value_bytes=max_value_bytes,
+            secret_values=(),
+        )
+        report.errors.extend(daily_state_load_errors)
+        if not daily_state_load_errors:
+            try:
+                DailyDataUpdateState.model_validate(daily_state)
+            except (ValidationError, TypeError, ValueError):
+                report.errors.append(
+                    "daily-data-update.json: state contract is invalid"
+                )
 
     if report.errors:
         report.valid_ranges.clear()

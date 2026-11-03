@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from app.cloud.contracts import (
+    DAILY_DATA_UPDATE_KEY,
     DATA_JOB_STATUS_KEY,
     MANIFEST_KEY,
     NOTIFICATION_STATE_KEY,
@@ -25,6 +26,7 @@ _FIXED_PATHS = {
     DATA_JOB_STATUS_KEY: Path("site/data/status.json"),
     TELEGRAM_JOB_STATUS_KEY: Path("state/telegram-job-status.json"),
     NOTIFICATION_STATE_KEY: Path("state/telegram-ledger.json"),
+    DAILY_DATA_UPDATE_KEY: Path("state/daily-data-update.json"),
 }
 _FIXED_KEYS_BY_PATH = {path: key for key, path in _FIXED_PATHS.items()}
 

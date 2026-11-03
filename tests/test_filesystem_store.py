@@ -17,6 +17,10 @@ def test_logical_keys_map_to_public_and_private_branch_paths(tmp_path: Path):
         == tmp_path / "state/telegram-ledger.json"
     )
     assert (
+        store.path_for_key("daily-data-update:v1")
+        == tmp_path / "state/daily-data-update.json"
+    )
+    assert (
         store.path_for_key("history:v1:v1")
         == tmp_path / "site/data/versions/v1/history.json"
     )
@@ -46,6 +50,25 @@ async def test_json_round_trip_listing_and_delete_are_stable(tmp_path: Path):
 
     assert await store.get_json("history:v1:v1") is None
     assert await store.list_keys("history:v1:") == ["history:v1:v2"]
+
+
+async def test_daily_update_state_round_trips_through_logical_key(tmp_path: Path):
+    store = FilesystemJsonStore(tmp_path)
+    state = {
+        "schemaVersion": 1,
+        "businessDate": "2026-11-03",
+        "status": "pending",
+        "attemptCount": 1,
+        "firstAttemptAt": "2026-11-03T18:45:00+07:00",
+        "lastAttemptAt": "2026-11-03T18:45:00+07:00",
+    }
+
+    await store.put_json("daily-data-update:v1", state)
+
+    assert await store.get_json("daily-data-update:v1") == state
+    assert await store.list_keys("daily-data-update:") == [
+        "daily-data-update:v1"
+    ]
 
 
 async def test_oversized_value_is_rejected_before_replacing_existing_file(

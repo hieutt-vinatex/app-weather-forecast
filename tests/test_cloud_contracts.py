@@ -6,7 +6,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from app.cloud.contracts import JobRecord
+import pytest
+from pydantic import ValidationError
+
+from app.cloud.contracts import DailyDataUpdateState, JobRecord
 from app.cloud.publisher import SnapshotPublisher
 from app.services.gdb_service import DayOutcome
 from app.services.snapshot_builder import SnapshotBuildContext
@@ -215,6 +218,116 @@ async def test_publication_root_verifier_checks_active_previous_status_and_ledge
 
     assert report.valid_ranges == {30, 60, 90}
     assert report.errors == []
+
+
+@pytest.mark.parametrize(
+    ("status", "extra"),
+    [
+        ("pending", {}),
+        (
+            "failed",
+            {
+                "initialFailureAt": "2026-11-03T18:45:30+07:00",
+                "lastReason": "invalid_upstream_data",
+            },
+        ),
+        (
+            "succeeded",
+            {
+                "publishedVersion": "20261103T114500000000Z",
+                "sourceReferenceDate": "2026-11-03",
+            },
+        ),
+    ],
+)
+def test_daily_update_state_accepts_each_valid_status(status: str, extra: dict):
+    raw = {
+        "schemaVersion": 1,
+        "businessDate": "2026-11-03",
+        "status": status,
+        "attemptCount": 1,
+        "firstAttemptAt": "2026-11-03T18:45:00+07:00",
+        "lastAttemptAt": "2026-11-03T18:45:30+07:00",
+        **extra,
+    }
+
+    state = DailyDataUpdateState.model_validate(raw)
+
+    assert state.model_dump(mode="json", by_alias=True)["status"] == status
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"attemptCount": -1},
+        {"firstAttemptAt": "2026-11-03T18:45:00"},
+        {"status": "succeeded"},
+        {"lastReason": "https://source.example/private?token=raw"},
+        {"exception": "upstream response body"},
+        {"botToken": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"},
+        {"chatId": "-1001234567890"},
+    ],
+)
+def test_daily_update_state_rejects_unsafe_or_incomplete_values(update: dict):
+    raw = {
+        "schemaVersion": 1,
+        "businessDate": "2026-11-03",
+        "status": "pending",
+        "attemptCount": 1,
+        "firstAttemptAt": "2026-11-03T18:45:00+07:00",
+        "lastAttemptAt": "2026-11-03T18:45:30+07:00",
+        **update,
+    }
+
+    with pytest.raises(ValidationError):
+        DailyDataUpdateState.model_validate(raw)
+
+
+async def test_publication_verifier_validates_daily_update_state(tmp_path: Path):
+    publication, _, _ = await published_tree(tmp_path)
+    write_json(
+        publication / "state/daily-data-update.json",
+        {
+            "schemaVersion": 1,
+            "businessDate": "2026-11-03",
+            "status": "succeeded",
+            "attemptCount": 2,
+            "firstAttemptAt": "2026-11-03T18:45:00+07:00",
+            "lastAttemptAt": "2026-11-03T19:45:00+07:00",
+            "initialFailureAt": "2026-11-03T18:45:30+07:00",
+            "publishedVersion": "20261103T124500000000Z",
+            "sourceReferenceDate": "2026-11-03",
+        },
+    )
+
+    report = verify_publication_root(publication)
+
+    assert report.errors == []
+
+
+async def test_publication_verifier_reports_daily_state_without_echoing_payload(
+    tmp_path: Path,
+):
+    publication, _, _ = await published_tree(tmp_path)
+    secret = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    write_json(
+        publication / "state/daily-data-update.json",
+        {
+            "schemaVersion": 1,
+            "businessDate": "2026-11-03",
+            "status": "failed",
+            "attemptCount": 1,
+            "firstAttemptAt": "2026-11-03T18:45:00+07:00",
+            "lastAttemptAt": "2026-11-03T18:45:30+07:00",
+            "initialFailureAt": "2026-11-03T18:45:30+07:00",
+            "lastReason": secret,
+        },
+    )
+
+    report = verify_publication_root(publication, secret_values=(secret,))
+
+    assert any("daily-data-update.json" in error for error in report.errors)
+    assert all(secret not in error for error in report.errors)
 
 
 async def test_publication_root_verifier_rejects_broken_paths_and_retention(
