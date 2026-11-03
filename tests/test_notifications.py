@@ -9,13 +9,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.notification_router import router as notification_router
+from app.cloud.contracts import DailyDataUpdateState
 from app.notifications.channels import DeliveryResult, NotificationTarget
 from app.notifications.channels import NotificationDispatcher
 from app.notifications.models import (
+    DailyUpdateWarning,
     evaluate_snapshot,
     evaluate_snapshot_now,
+    evaluate_minimum_absence_snapshot_now,
+    format_daily_report_message,
+    format_data_failure_message,
     format_alert_message,
     format_immediate_report_message,
+    format_minimum_immediate_report_message,
+    format_no_data_daily_message,
 )
 from app.notifications.service import NotificationService
 from app.notifications.state_store import NotificationStateStore
@@ -57,6 +64,196 @@ def _snapshot(*, incomplete_offset: int | None = None):
         )
     state = RealtimeState(poll_interval_seconds=30.0, realtime_enabled=True)
     return gdb._assemble(90, outcomes, state), reference
+
+
+def _minimum_snapshot(*, days: int = 90, future_partial: bool = False):
+    settings = make_settings()
+    gdb = GdbService(
+        settings,
+        FakeFetcher(lambda url, cond: status_result(FetchStatus.TIMEOUT)),
+    )
+    reference = date(2026, 10, 14)
+    first = reference - timedelta(days=days - 1)
+    seen_at_offsets = {19: "01", 20: "02", 21: "03", 26: "04", 40: "05"}
+    outcomes: list[DayOutcome] = []
+    for index in range(days):
+        day = first + timedelta(days=index)
+        offset = (reference - day).days
+        prizes = {
+            prize: tuple("99" for _ in range(PRIZE_COUNTS[prize]))
+            for prize in PRIZE_KEYS
+        }
+        if offset in seen_at_offsets:
+            prizes["db"] = (seen_at_offsets[offset],)
+        outcomes.append(
+            DayOutcome(
+                day=day,
+                source_url=f"https://example.test/{day.isoformat()}",
+                gdb=prizes["db"][0],
+                prizes=prizes,
+                complete=True,
+                ok=True,
+            )
+        )
+    if future_partial:
+        future = reference + timedelta(days=1)
+        outcomes.append(
+            DayOutcome(
+                day=future,
+                source_url=f"https://example.test/{future.isoformat()}",
+                gdb="06",
+                prizes={"db": ("06",)},
+                complete=False,
+                ok=True,
+            )
+        )
+    state = RealtimeState(poll_interval_seconds=30.0, realtime_enabled=True)
+    return gdb._assemble(90, outcomes, state), reference
+
+
+def test_minimum_absence_evaluation_covers_boundaries_and_all_numbers():
+    snapshot, reference = _minimum_snapshot(future_partial=True)
+
+    evaluation = evaluate_minimum_absence_snapshot_now(
+        snapshot,
+        now=datetime(2026, 10, 20, 14, 30, tzinfo=TZ),
+        min_days=20,
+    )
+
+    by_number = {item.number: item for item in evaluation.candidates}
+    assert evaluation.status == "ready"
+    assert evaluation.reference_date == reference
+    assert "01" not in by_number
+    assert {
+        number: (by_number[number].days_absent, by_number[number].is_lower_bound)
+        for number in ("02", "03", "04", "05", "06")
+    } == {
+        "02": (20, False),
+        "03": (21, False),
+        "04": (26, False),
+        "05": (40, False),
+        "06": (90, True),
+    }
+    assert by_number["06"].last_seen is None
+    assert "00" in by_number
+    assert "99" not in by_number
+    assert list(evaluation.candidates) == sorted(
+        evaluation.candidates,
+        key=lambda item: (-item.days_absent, item.number),
+    )
+
+
+def test_minimum_absence_does_not_claim_never_seen_with_short_coverage():
+    snapshot, reference = _minimum_snapshot(days=19)
+
+    evaluation = evaluate_minimum_absence_snapshot_now(
+        snapshot,
+        now=datetime(2026, 10, 20, 14, 30, tzinfo=TZ),
+        min_days=20,
+    )
+
+    assert evaluation.status == "no_match"
+    assert evaluation.reference_date == reference
+    assert evaluation.candidates == ()
+
+
+def test_daily_report_formats_fresh_stale_zero_and_lower_bound_results():
+    snapshot, reference = _minimum_snapshot()
+    evaluation = evaluate_minimum_absence_snapshot_now(
+        snapshot,
+        now=datetime(2026, 10, 20, 14, 30, tzinfo=TZ),
+        min_days=20,
+    )
+
+    fresh = format_daily_report_message(
+        evaluation,
+        report_date=date(2026, 10, 15),
+        min_days=20,
+    )
+    stale = format_daily_report_message(
+        evaluation,
+        report_date=date(2026, 10, 15),
+        min_days=20,
+        warning=DailyUpdateWarning(
+            expected_date=date(2026, 10, 14),
+            attempt_count=6,
+            last_reason="invalid_upstream_data",
+        ),
+    )
+    zero = format_daily_report_message(
+        evaluation.__class__(
+            status="no_match",
+            reference_date=reference,
+            candidates=(),
+        ),
+        report_date=date(2026, 10, 15),
+        min_days=20,
+    )
+
+    assert "Báo cáo ngày: 15/10/2026" in fresh
+    assert "Kỳ dữ liệu: 14/10/2026" in fresh
+    assert "số chưa xuất hiện từ 20 ngày trở lên" in fresh
+    assert "≥90 ngày – không thấy trong dữ liệu hiện có" in fresh
+    assert "Tổng cộng:" in fresh
+    assert stale.index("Đang sử dụng dữ liệu cũ") < stale.index("Kỳ dữ liệu")
+    assert "Số lần thử: 6" in stale
+    assert "Mã lỗi: invalid_upstream_data" in stale
+    assert (
+        "Không có số nào chưa xuất hiện từ 20 ngày trở lên trong kỳ dữ liệu này."
+        in zero
+    )
+
+
+def test_failure_and_no_data_messages_never_invent_results():
+    state = DailyDataUpdateState(
+        business_date=date(2026, 10, 14),
+        status="failed",
+        attempt_count=1,
+        first_attempt_at=datetime(2026, 10, 14, 18, 45, tzinfo=TZ),
+        last_attempt_at=datetime(2026, 10, 14, 18, 46, tzinfo=TZ),
+        initial_failure_at=datetime(2026, 10, 14, 18, 46, tzinfo=TZ),
+        last_reason="invalid_upstream_data",
+    )
+
+    failure = format_data_failure_message(
+        state,
+        latest_reference_date=date(2026, 10, 13),
+    )
+    no_data = format_no_data_daily_message(
+        report_date=date(2026, 10, 15),
+        expected_date=date(2026, 10, 14),
+        attempt_count=1,
+        last_reason="invalid_upstream_data",
+    )
+
+    assert "14/10/2026" in failure
+    assert "Kỳ dữ liệu gần nhất: 13/10/2026" in failure
+    assert "23:45" in failure
+    assert "Không có snapshot hợp lệ để lập báo cáo." in no_data
+    assert not any(
+        (line[:1].isdigit() and " ngày:" in line) or line.startswith("≥")
+        for line in no_data.splitlines()
+    )
+
+
+def test_minimum_immediate_report_uses_same_unbounded_rule():
+    snapshot, _ = _minimum_snapshot()
+    checked_at = datetime(2026, 10, 20, 14, 30, tzinfo=TZ)
+    evaluation = evaluate_minimum_absence_snapshot_now(
+        snapshot,
+        now=checked_at,
+        min_days=20,
+    )
+
+    message = format_minimum_immediate_report_message(
+        evaluation,
+        checked_at=checked_at,
+        min_days=20,
+    )
+
+    assert "40 ngày: 05" in message
+    assert "≥90 ngày – không thấy trong dữ liệu hiện có" in message
+    assert "Kiểm tra lúc: 20/10/2026 14:30:00" in message
 
 
 def test_evaluate_snapshot_finds_exact_absence_and_due_time():
