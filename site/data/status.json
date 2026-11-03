@@ -1,1 +1,1 @@
-{"kind":"data","mode":"incremental","status":"failed","startedAt":"2026-11-03T04:30:49.766015+07:00","finishedAt":"2026-11-03T04:30:51.054883+07:00","version":null,"recordCount":0,"reason":"invalid_upstream_data"}
+{"kind":"data","mode":"full","status":"succeeded","startedAt":"2026-11-03T09:23:57.893388+07:00","finishedAt":"2026-11-03T09:24:07.602731+07:00","version":"20261103T022407602731Z","recordCount":90,"reason":null}
