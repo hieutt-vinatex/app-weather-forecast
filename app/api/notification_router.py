@@ -83,12 +83,12 @@ async def send_notifications_now(
     elif outcome.candidates:
         message = (
             f"Đã gửi {len(outcome.candidates)} số đang vắng "
-            f"{settings.notification_min_days}–{settings.notification_max_days} ngày."
+            f"từ {settings.notification_min_days} ngày trở lên."
         )
     else:
         message = (
             "Đã gửi báo cáo: không có số nào đang vắng "
-            f"{settings.notification_min_days}–{settings.notification_max_days} ngày."
+            f"từ {settings.notification_min_days} ngày trở lên."
         )
 
     return {
@@ -99,13 +99,19 @@ async def send_notifications_now(
         "checkedAt": outcome.checked_at.isoformat(),
         "referenceDate": outcome.reference_date,
         "minDays": settings.notification_min_days,
-        "maxDays": settings.notification_max_days,
+        "maxDays": None,
+        "threshold": f"{settings.notification_min_days}-plus",
         "candidateCount": len(outcome.candidates),
         "candidates": [
             {
                 "number": candidate.number,
                 "daysAbsent": candidate.days_absent,
-                "lastSeen": candidate.last_seen.isoformat(),
+                "lastSeen": (
+                    candidate.last_seen.isoformat()
+                    if candidate.last_seen is not None
+                    else None
+                ),
+                "isLowerBound": candidate.is_lower_bound,
             }
             for candidate in outcome.candidates
         ],

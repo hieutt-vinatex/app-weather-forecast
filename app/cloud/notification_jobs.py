@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Callable
+from datetime import date, datetime, timedelta
+from typing import Awaitable, Callable
 from uuid import UUID
 
 from pydantic import ValidationError
 
 from app.cloud.contracts import (
+    DAILY_DATA_UPDATE_KEY,
     MANIFEST_KEY,
     TELEGRAM_JOB_STATUS_KEY,
+    DailyDataUpdateState,
     JobRecord,
     JsonStore,
     OperationRecord,
@@ -24,9 +26,12 @@ from app.cloud.publisher import StorageReadError
 from app.config import Settings
 from app.notifications.channels import NotificationDispatcher
 from app.notifications.models import (
+    DailyUpdateWarning,
     evaluate_snapshot_now,
-    format_alert_message,
+    format_daily_report_message,
+    format_data_failure_message,
     format_immediate_report_message,
+    format_no_data_daily_message,
 )
 from app.notifications.state_store import NotificationStateProtocol
 from app.schemas.gdb import SnapshotResponse
@@ -44,16 +49,61 @@ class CloudNotificationResult:
     reason: str | None = None
 
 
-async def run_scheduled_notification(
+async def run_daily_report(
     settings: Settings,
     store: JsonStore,
     *,
     clock: Clock,
 ) -> CloudNotificationResult:
     now = _now(settings, clock)
+    if not (9 <= now.hour <= 12):
+        return CloudNotificationResult(status="outside_window", mode="daily")
+    return await _run_automatic_notification(
+        settings,
+        store,
+        mode="daily",
+        now=now,
+        clock=clock,
+        worker=lambda state, dispatcher: _run_daily(
+            settings, store, state, dispatcher, now
+        ),
+    )
+
+
+async def run_data_failure_notification(
+    settings: Settings,
+    store: JsonStore,
+    *,
+    clock: Clock,
+) -> CloudNotificationResult:
+    now = _now(settings, clock)
+    return await _run_automatic_notification(
+        settings,
+        store,
+        mode="data-failure",
+        now=now,
+        clock=clock,
+        worker=lambda state, dispatcher: _run_data_failure(
+            settings, store, state, dispatcher, now
+        ),
+    )
+
+
+async def _run_automatic_notification(
+    settings: Settings,
+    store: JsonStore,
+    *,
+    mode: str,
+    now: datetime,
+    clock: Clock,
+    worker: Callable[
+        [NotificationStateProtocol, NotificationDispatcher],
+        Awaitable[CloudNotificationResult],
+    ],
+) -> CloudNotificationResult:
     running = JobRecord(
         kind="telegram",
-        mode="scheduled",
+        mode=mode,
         status="running",
         started_at=now,
     )
@@ -62,13 +112,13 @@ async def run_scheduled_notification(
     dispatcher = _build_dispatcher(settings, state)
     try:
         await dispatcher.start()
-        result = await _run_scheduled(settings, store, state, dispatcher, now)
+        result = await worker(state, dispatcher)
     except asyncio.CancelledError:
         await _persist_job(
             store,
             JobRecord(
                 kind="telegram",
-                mode="scheduled",
+                mode=mode,
                 status="failed",
                 started_at=now,
                 finished_at=_now(settings, clock),
@@ -81,7 +131,7 @@ async def run_scheduled_notification(
             store,
             JobRecord(
                 kind="telegram",
-                mode="scheduled",
+                mode=mode,
                 status="failed",
                 started_at=now,
                 finished_at=_now(settings, clock),
@@ -96,7 +146,7 @@ async def run_scheduled_notification(
         store,
         JobRecord(
             kind="telegram",
-            mode="scheduled",
+            mode=mode,
             status=result.status,
             started_at=now,
             finished_at=_now(settings, clock),
@@ -207,52 +257,156 @@ async def run_manual_notification(
     return result
 
 
-async def _run_scheduled(
+async def _run_daily(
     settings: Settings,
     store: JsonStore,
     state: NotificationStateProtocol,
     dispatcher: NotificationDispatcher,
     now: datetime,
 ) -> CloudNotificationResult:
-    snapshot = await _load_snapshot(store)
+    report_date = now.date()
+    expected_date = report_date - timedelta(days=1)
+    event_key = (
+        f"daily-report:{report_date.isoformat()}:"
+        f"{settings.notification_min_days}-plus"
+    )
+    daily_state = await _load_daily_state_optional(store)
+    manifest, snapshot = await _load_snapshot_optional(store)
+    fresh = (
+        daily_state is not None
+        and daily_state.business_date == expected_date
+        and daily_state.status == "succeeded"
+        and manifest is not None
+        and manifest.source_reference_date == expected_date
+    )
+    warning: DailyUpdateWarning | None = None
+    if not fresh:
+        if daily_state is not None and daily_state.business_date == expected_date:
+            attempt_count = daily_state.attempt_count
+            reason = daily_state.last_reason or "publication_mismatch"
+        else:
+            attempt_count = 0
+            reason = "update_state_missing"
+        warning = DailyUpdateWarning(
+            expected_date=expected_date,
+            attempt_count=attempt_count,
+            last_reason=reason,
+        )
+
+    if snapshot is None:
+        message = format_no_data_daily_message(
+            report_date=report_date,
+            expected_date=expected_date,
+            attempt_count=warning.attempt_count if warning is not None else 0,
+            last_reason=(
+                warning.last_reason if warning is not None else "publication_mismatch"
+            ),
+        )
+        return await _deliver_event(
+            settings,
+            state,
+            dispatcher,
+            event_key=event_key,
+            message=message,
+            mode="daily",
+            now=now,
+            reference_date=None,
+        )
+
     evaluation = evaluate_snapshot_now(
         snapshot,
         now=now,
         min_days=settings.notification_min_days,
-        max_days=settings.notification_max_days,
     )
-    reference_date = (
-        evaluation.reference_date.isoformat()
-        if evaluation.reference_date is not None
-        else None
-    )
-    if evaluation.status in {"not_due", "waiting", "expired"}:
-        return CloudNotificationResult(
-            status=evaluation.status,
-            mode="scheduled",
-            reference_date=reference_date,
-            reason=evaluation.reason,
+    if evaluation.status == "waiting" or evaluation.reference_date is None:
+        message = format_no_data_daily_message(
+            report_date=report_date,
+            expected_date=expected_date,
+            attempt_count=warning.attempt_count if warning is not None else 0,
+            last_reason=(
+                warning.last_reason if warning is not None else "publication_mismatch"
+            ),
         )
-    if evaluation.event_key is None:
-        raise NotificationDataError("evaluation event key is missing")
-    event_key = (
-        f"{evaluation.event_key}:"
-        f"{settings.notification_min_days}-{settings.notification_max_days}"
-    )
-    if evaluation.status == "no_match":
-        if not await state.is_no_match(event_key):
-            await state.mark_no_match(event_key, now)
-        return CloudNotificationResult(
-            status="no_match",
-            mode="scheduled",
-            reference_date=reference_date,
+        return await _deliver_event(
+            settings,
+            state,
+            dispatcher,
+            event_key=event_key,
+            message=message,
+            mode="daily",
+            now=now,
+            reference_date=None,
         )
+    message = format_daily_report_message(
+        evaluation,
+        report_date=report_date,
+        min_days=settings.notification_min_days,
+        warning=warning,
+    )
+    return await _deliver_event(
+        settings,
+        state,
+        dispatcher,
+        event_key=event_key,
+        message=message,
+        mode="daily",
+        now=now,
+        reference_date=evaluation.reference_date.isoformat(),
+    )
 
+
+async def _run_data_failure(
+    settings: Settings,
+    store: JsonStore,
+    state: NotificationStateProtocol,
+    dispatcher: NotificationDispatcher,
+    now: datetime,
+) -> CloudNotificationResult:
+    daily_state = await _load_daily_state_optional(store)
+    eligible_dates = {now.date(), now.date() - timedelta(days=1)}
+    if (
+        daily_state is None
+        or daily_state.status != "failed"
+        or daily_state.initial_failure_at is None
+        or daily_state.business_date not in eligible_dates
+    ):
+        return CloudNotificationResult(status="not_due", mode="data-failure")
+    manifest = await _load_manifest_optional(store)
+    latest_reference = manifest.source_reference_date if manifest is not None else None
+    message = format_data_failure_message(
+        daily_state,
+        latest_reference_date=latest_reference,
+    )
+    return await _deliver_event(
+        settings,
+        state,
+        dispatcher,
+        event_key=f"data-update-failure:{daily_state.business_date.isoformat()}",
+        message=message,
+        mode="data-failure",
+        now=now,
+        reference_date=(
+            latest_reference.isoformat() if latest_reference is not None else None
+        ),
+    )
+
+
+async def _deliver_event(
+    settings: Settings,
+    state: NotificationStateProtocol,
+    dispatcher: NotificationDispatcher,
+    *,
+    event_key: str,
+    message: str,
+    mode: str,
+    now: datetime,
+    reference_date: str | None,
+) -> CloudNotificationResult:
     targets = dispatcher.targets()
     if not targets:
         return CloudNotificationResult(
             status="not_configured",
-            mode="scheduled",
+            mode=mode,
             reference_date=reference_date,
             reason="no_notification_targets",
         )
@@ -261,18 +415,13 @@ async def _run_scheduled(
     if not pending:
         return CloudNotificationResult(
             status="already_delivered",
-            mode="scheduled",
+            mode=mode,
             reference_date=reference_date,
         )
-    message = format_alert_message(
-        evaluation,
-        min_days=settings.notification_min_days,
-        max_days=settings.notification_max_days,
-    )
     if settings.notification_dry_run:
         return CloudNotificationResult(
             status="dry_run",
-            mode="scheduled",
+            mode=mode,
             reference_date=reference_date,
         )
 
@@ -287,7 +436,7 @@ async def _run_scheduled(
             failed += 1
     return CloudNotificationResult(
         status="partial_failure" if failed else "delivered",
-        mode="scheduled",
+        mode=mode,
         reference_date=reference_date,
         delivered_count=delivered,
         failed_count=failed,
@@ -306,7 +455,6 @@ async def _run_manual(
         snapshot,
         now=now,
         min_days=settings.notification_min_days,
-        max_days=settings.notification_max_days,
     )
     reference_date = (
         evaluation.reference_date.isoformat()
@@ -332,7 +480,6 @@ async def _run_manual(
         evaluation,
         checked_at=now,
         min_days=settings.notification_min_days,
-        max_days=settings.notification_max_days,
     )
     if settings.notification_dry_run:
         return CloudNotificationResult(
@@ -359,23 +506,51 @@ async def _run_manual(
     )
 
 
-class NotificationDataError(RuntimeError):
-    pass
+async def _load_daily_state_optional(
+    store: JsonStore,
+) -> DailyDataUpdateState | None:
+    raw = await store.get_json(DAILY_DATA_UPDATE_KEY)
+    if raw is None:
+        return None
+    try:
+        return DailyDataUpdateState.model_validate(raw)
+    except (ValidationError, TypeError, ValueError):
+        return None
+
+
+async def _load_manifest_optional(
+    store: JsonStore,
+) -> PublicationManifest | None:
+    raw = await store.get_json(MANIFEST_KEY)
+    if raw is None:
+        return None
+    try:
+        return PublicationManifest.model_validate(raw)
+    except (ValidationError, TypeError, ValueError):
+        return None
+
+
+async def _load_snapshot_optional(
+    store: JsonStore,
+) -> tuple[PublicationManifest | None, SnapshotResponse | None]:
+    manifest = await _load_manifest_optional(store)
+    if manifest is None:
+        return None, None
+    key = manifest.snapshot_keys.get(90)
+    if key is None:
+        return manifest, None
+    raw_snapshot = await store.get_json(key)
+    try:
+        return manifest, SnapshotResponse.model_validate(raw_snapshot)
+    except (ValidationError, TypeError, ValueError):
+        return manifest, None
 
 
 async def _load_snapshot(store: JsonStore) -> SnapshotResponse:
-    try:
-        raw_manifest = await store.get_json(MANIFEST_KEY)
-        manifest = PublicationManifest.model_validate(raw_manifest)
-        key = manifest.snapshot_keys.get(90)
-        if key is None:
-            raise NotificationDataError("90-day snapshot key is missing")
-        raw_snapshot = await store.get_json(key)
-        return SnapshotResponse.model_validate(raw_snapshot)
-    except NotificationDataError:
-        raise
-    except (ValidationError, TypeError, ValueError) as exc:
-        raise StorageReadError("active notification snapshot is invalid") from exc
+    _, snapshot = await _load_snapshot_optional(store)
+    if snapshot is None:
+        raise StorageReadError("active notification snapshot is invalid")
+    return snapshot
 
 
 def _build_dispatcher(
@@ -453,7 +628,7 @@ async def _persist_manual_failure(
 def _safe_reason(exc: Exception) -> str:
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return "job_timeout"
-    if isinstance(exc, (NotificationDataError, StorageReadError)):
+    if isinstance(exc, StorageReadError):
         return "invalid_snapshot"
     if exc.__class__.__module__.startswith("app.cloud"):
         return "cloud_storage_error"

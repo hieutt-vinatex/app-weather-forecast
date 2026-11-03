@@ -16,12 +16,10 @@ from app.notifications.models import (
     DailyUpdateWarning,
     evaluate_snapshot,
     evaluate_snapshot_now,
-    evaluate_minimum_absence_snapshot_now,
     format_daily_report_message,
     format_data_failure_message,
     format_alert_message,
     format_immediate_report_message,
-    format_minimum_immediate_report_message,
     format_no_data_daily_message,
 )
 from app.notifications.service import NotificationService
@@ -114,7 +112,7 @@ def _minimum_snapshot(*, days: int = 90, future_partial: bool = False):
 def test_minimum_absence_evaluation_covers_boundaries_and_all_numbers():
     snapshot, reference = _minimum_snapshot(future_partial=True)
 
-    evaluation = evaluate_minimum_absence_snapshot_now(
+    evaluation = evaluate_snapshot_now(
         snapshot,
         now=datetime(2026, 10, 20, 14, 30, tzinfo=TZ),
         min_days=20,
@@ -146,7 +144,7 @@ def test_minimum_absence_evaluation_covers_boundaries_and_all_numbers():
 def test_minimum_absence_does_not_claim_never_seen_with_short_coverage():
     snapshot, reference = _minimum_snapshot(days=19)
 
-    evaluation = evaluate_minimum_absence_snapshot_now(
+    evaluation = evaluate_snapshot_now(
         snapshot,
         now=datetime(2026, 10, 20, 14, 30, tzinfo=TZ),
         min_days=20,
@@ -159,7 +157,7 @@ def test_minimum_absence_does_not_claim_never_seen_with_short_coverage():
 
 def test_daily_report_formats_fresh_stale_zero_and_lower_bound_results():
     snapshot, reference = _minimum_snapshot()
-    evaluation = evaluate_minimum_absence_snapshot_now(
+    evaluation = evaluate_snapshot_now(
         snapshot,
         now=datetime(2026, 10, 20, 14, 30, tzinfo=TZ),
         min_days=20,
@@ -239,13 +237,13 @@ def test_failure_and_no_data_messages_never_invent_results():
 def test_minimum_immediate_report_uses_same_unbounded_rule():
     snapshot, _ = _minimum_snapshot()
     checked_at = datetime(2026, 10, 20, 14, 30, tzinfo=TZ)
-    evaluation = evaluate_minimum_absence_snapshot_now(
+    evaluation = evaluate_snapshot_now(
         snapshot,
         now=checked_at,
         min_days=20,
     )
 
-    message = format_minimum_immediate_report_message(
+    message = format_immediate_report_message(
         evaluation,
         checked_at=checked_at,
         min_days=20,
@@ -256,63 +254,58 @@ def test_minimum_immediate_report_uses_same_unbounded_rule():
     assert "Kiểm tra lúc: 20/10/2026 14:30:00" in message
 
 
-def test_evaluate_snapshot_finds_exact_absence_and_due_time():
-    snapshot, reference = _snapshot()
+def test_evaluate_snapshot_uses_unbounded_minimum_and_due_time():
+    snapshot, reference = _minimum_snapshot()
     evaluation = evaluate_snapshot(
         snapshot,
         now=datetime(2026, 10, 15, 9, 1, tzinfo=TZ),
-        min_days=19,
-        max_days=25,
+        min_days=20,
         send_time=datetime.strptime("09:00", "%H:%M").time(),
     )
 
     assert evaluation.status == "ready"
     assert evaluation.reference_date == reference
-    assert [(item.number, item.days_absent) for item in evaluation.candidates] == [
-        ("19", 19)
-    ]
-    message = format_alert_message(evaluation, min_days=19, max_days=25)
-    assert "19 ngày: 19" in message
+    by_number = {item.number: item.days_absent for item in evaluation.candidates}
+    assert by_number["02"] == 20
+    assert by_number["05"] == 40
+    message = format_alert_message(evaluation, min_days=20)
+    assert "40 ngày: 05" in message
     assert "14/10/2026" in message
 
 
-def test_evaluate_snapshot_waits_when_required_history_is_incomplete():
+def test_evaluate_snapshot_ignores_incomplete_draws():
     snapshot, _ = _snapshot(incomplete_offset=10)
     evaluation = evaluate_snapshot(
         snapshot,
         now=datetime(2026, 10, 15, 9, 1, tzinfo=TZ),
-        min_days=19,
-        max_days=25,
+        min_days=20,
         send_time=datetime.strptime("09:00", "%H:%M").time(),
     )
 
-    assert evaluation.status == "waiting"
-    assert evaluation.reason is not None
-    assert evaluation.reason.startswith("incomplete_coverage")
+    assert evaluation.status == "ready"
 
 
 def test_evaluate_snapshot_now_ignores_schedule_and_formats_report():
-    snapshot, reference = _snapshot()
+    snapshot, reference = _minimum_snapshot()
     checked_at = datetime(2026, 10, 20, 14, 30, tzinfo=TZ)
     evaluation = evaluate_snapshot_now(
         snapshot,
         now=checked_at,
-        min_days=19,
-        max_days=25,
+        min_days=20,
     )
 
     assert evaluation.status == "ready"
     assert evaluation.reference_date == reference
-    assert [(item.number, item.days_absent) for item in evaluation.candidates] == [
-        ("19", 19)
-    ]
+    assert any(
+        item.number == "05" and item.days_absent == 40
+        for item in evaluation.candidates
+    )
     message = format_immediate_report_message(
         evaluation,
         checked_at=checked_at,
-        min_days=19,
-        max_days=25,
+        min_days=20,
     )
-    assert "19 ngày: 19" in message
+    assert "40 ngày: 05" in message
     assert "Kiểm tra lúc: 20/10/2026 14:30:00" in message
 
 
@@ -441,13 +434,12 @@ class _FakeDispatcher:
 
 
 async def test_notification_service_does_not_send_same_event_twice(tmp_path):
-    snapshot, _ = _snapshot()
+    snapshot, _ = _minimum_snapshot()
     settings = make_settings(
         notifications_enabled=True,
         notification_dry_run=False,
         notification_state_path=str(tmp_path / "state.json"),
-        notification_min_days=19,
-        notification_max_days=25,
+        notification_min_days=20,
     )
     dispatcher = _FakeDispatcher()
     realtime = _FakeRealtime(snapshot)
@@ -466,16 +458,45 @@ async def test_notification_service_does_not_send_same_event_twice(tmp_path):
     assert second == []
     assert len(dispatcher.sent) == 1
     assert service.last_status == "delivered"
+    persisted = NotificationStateStore(str(tmp_path / "state.json"))
+    assert await persisted.sent_targets("2026-10-14:20-plus") == {
+        "telegram:chat:test"
+    }
 
 
-async def test_immediate_notification_sends_on_every_explicit_click(tmp_path):
-    snapshot, _ = _snapshot()
+async def test_notification_service_delivers_valid_zero_candidate_confirmation(
+    tmp_path,
+):
+    snapshot, _ = _minimum_snapshot(days=19)
     settings = make_settings(
         notifications_enabled=True,
         notification_dry_run=False,
         notification_state_path=str(tmp_path / "state.json"),
-        notification_min_days=19,
-        notification_max_days=25,
+        notification_min_days=20,
+    )
+    dispatcher = _FakeDispatcher()
+    service = NotificationService(
+        settings,
+        _FakeRealtime(snapshot),
+        dispatcher=dispatcher,
+        clock=lambda: datetime(2026, 10, 15, 9, 1, tzinfo=TZ),
+    )
+
+    first = await service.run_once()
+    second = await service.run_once()
+
+    assert len(first) == 1
+    assert second == []
+    assert "Không có số nào chưa xuất hiện từ 20 ngày trở lên" in dispatcher.sent[0][1]
+
+
+async def test_immediate_notification_sends_on_every_explicit_click(tmp_path):
+    snapshot, _ = _minimum_snapshot()
+    settings = make_settings(
+        notifications_enabled=True,
+        notification_dry_run=False,
+        notification_state_path=str(tmp_path / "state.json"),
+        notification_min_days=20,
     )
     dispatcher = _FakeDispatcher()
     service = NotificationService(
@@ -490,16 +511,17 @@ async def test_immediate_notification_sends_on_every_explicit_click(tmp_path):
 
     assert first.status == "delivered"
     assert first.reference_date == "2026-10-14"
-    assert [(item.number, item.days_absent) for item in first.candidates] == [
-        ("19", 19)
-    ]
+    assert any(
+        item.number == "05" and item.days_absent == 40
+        for item in first.candidates
+    )
     assert second.status == "delivered"
     assert len(dispatcher.sent) == 2
     assert all("Kiểm tra lúc: 20/10/2026 14:30:00" in item[1] for item in dispatcher.sent)
 
 
 def test_notification_operational_endpoints_are_protected(tmp_path):
-    snapshot, _ = _snapshot()
+    snapshot, _ = _minimum_snapshot()
     settings = make_settings(
         notification_admin_token="admin-secret",
         notification_dry_run=True,
@@ -542,9 +564,15 @@ def test_notification_operational_endpoints_are_protected(tmp_path):
     )
     assert send_now.status_code == 200
     assert send_now.json()["status"] == "dry_run"
-    assert send_now.json()["candidateCount"] == 1
-    assert send_now.json()["candidates"][0] == {
-        "number": "19",
-        "daysAbsent": 19,
-        "lastSeen": "2026-09-25",
+    body = send_now.json()
+    assert body["candidateCount"] > 1
+    assert body["minDays"] == 20
+    assert body["maxDays"] is None
+    assert body["threshold"] == "20-plus"
+    candidate = next(item for item in body["candidates"] if item["number"] == "05")
+    assert candidate == {
+        "number": "05",
+        "daysAbsent": 40,
+        "lastSeen": "2026-09-04",
+        "isLowerBound": False,
     }

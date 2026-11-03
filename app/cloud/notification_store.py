@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.cloud.contracts import JsonStore, NOTIFICATION_STATE_KEY
@@ -93,11 +93,24 @@ class JsonNotificationStateStore:
 
     @staticmethod
     def _prune(state: dict[str, Any], now: datetime) -> None:
-        cutoff = (now.date() - timedelta(days=120)).isoformat()
+        cutoff = now.date() - timedelta(days=120)
         events = state["events"]
         for key in list(events):
-            if key.split(":", 1)[0] < cutoff:
+            event_date = JsonNotificationStateStore._event_date(key)
+            if event_date is not None and event_date < cutoff:
                 del events[key]
+
+    @staticmethod
+    def _event_date(event_key: str) -> date | None:
+        parts = event_key.split(":")
+        if parts[0] in {"daily-report", "data-update-failure"}:
+            candidate = parts[1] if len(parts) > 1 else ""
+        else:
+            candidate = parts[0]
+        try:
+            return date.fromisoformat(candidate)
+        except ValueError:
+            return None
 
 
 KVNotificationStateStore = JsonNotificationStateStore

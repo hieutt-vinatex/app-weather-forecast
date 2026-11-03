@@ -152,7 +152,7 @@ def test_telegram_cli_noop_after_recorded_success_returns_zero(
         del args, settings
         return CloudNotificationResult(
             status="already_delivered",
-            mode="scheduled",
+            mode="daily",
         )
 
     monkeypatch.setattr(cloud_job, "_run_telegram", fake_run_telegram)
@@ -161,7 +161,7 @@ def test_telegram_cli_noop_after_recorded_success_returns_zero(
         [
             "telegram",
             "--mode",
-            "scheduled",
+            "daily",
             "--store-root",
             str(tmp_path),
         ],
@@ -213,7 +213,7 @@ def test_telegram_cli_requires_ledger_hmac_key(tmp_path: Path, capsys):
         [
             "telegram",
             "--mode",
-            "scheduled",
+            "daily",
             "--store-root",
             str(tmp_path),
         ],
@@ -222,3 +222,50 @@ def test_telegram_cli_requires_ledger_hmac_key(tmp_path: Path, capsys):
 
     assert code == 2
     assert "NOTIFICATION_LEDGER_HMAC_KEY" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("mode", "function_name"),
+    [("daily", "run_daily_report"), ("data-failure", "run_data_failure_notification")],
+)
+async def test_run_telegram_routes_automatic_modes(
+    monkeypatch, tmp_path, mode, function_name
+):
+    called: list[str] = []
+
+    async def fake_job(settings, store, *, clock):
+        del settings, store
+        assert clock().tzinfo is not None
+        called.append(function_name)
+        return CloudNotificationResult(status="not_due", mode=mode)
+
+    monkeypatch.setattr(cloud_job, function_name, fake_job)
+    args = argparse.Namespace(mode=mode, request_id=None, store_root=tmp_path)
+
+    result = await cloud_job._run_telegram(args, github_settings())
+
+    assert result.mode == mode
+    assert called == [function_name]
+
+
+async def test_run_telegram_manual_requires_and_passes_request_id(
+    monkeypatch, tmp_path
+):
+    captured: dict[str, str] = {}
+
+    async def fake_manual(settings, store, request_id, *, clock):
+        del settings, store, clock
+        captured["request_id"] = request_id
+        return CloudNotificationResult(status="delivered", mode="manual")
+
+    monkeypatch.setattr(cloud_job, "run_manual_notification", fake_manual)
+    args = argparse.Namespace(
+        mode="manual",
+        request_id=REQUEST_ID,
+        store_root=tmp_path,
+    )
+
+    result = await cloud_job._run_telegram(args, github_settings())
+
+    assert result.status == "delivered"
+    assert captured == {"request_id": REQUEST_ID}

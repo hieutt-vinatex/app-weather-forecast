@@ -94,8 +94,7 @@ class Settings(BaseSettings):
     # backend and are never exposed through the API/frontend.
     notifications_enabled: bool = False
     notification_dry_run: bool = True
-    notification_min_days: int = 19
-    notification_max_days: int = 25
+    notification_min_days: int = 20
     notification_send_time: str = "09:00"
     notification_check_interval_seconds: float = 60.0
     notification_retry_interval_seconds: float = 300.0
@@ -179,12 +178,6 @@ class Settings(BaseSettings):
             raise ValueError("GITHUB_JOB_TIMEOUT_SECONDS must be > 0")
         if self.notification_min_days < 1:
             raise ValueError("NOTIFICATION_MIN_DAYS must be >= 1")
-        if self.notification_max_days < self.notification_min_days:
-            raise ValueError(
-                "NOTIFICATION_MAX_DAYS must be >= NOTIFICATION_MIN_DAYS"
-            )
-        if self.notification_max_days > 88:
-            raise ValueError("NOTIFICATION_MAX_DAYS must be <= 88")
         if self.notification_check_interval_seconds < 5:
             raise ValueError("NOTIFICATION_CHECK_INTERVAL_SECONDS must be >= 5")
         if self.notification_retry_interval_seconds < 5:

@@ -21,8 +21,9 @@ from app.cloud.data_jobs import (  # noqa: E402
 from app.cloud.filesystem_store import FilesystemJsonStore  # noqa: E402
 from app.cloud.notification_jobs import (  # noqa: E402
     CloudNotificationResult,
+    run_daily_report,
+    run_data_failure_notification,
     run_manual_notification,
-    run_scheduled_notification,
 )
 from app.config import Settings, get_settings  # noqa: E402
 
@@ -42,7 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--request-id")
     sync.add_argument("--store-root", type=Path, required=True)
     telegram = subparsers.add_parser("telegram", help="send Telegram reports")
-    telegram.add_argument("--mode", choices=("scheduled", "manual"), required=True)
+    telegram.add_argument(
+        "--mode",
+        choices=("daily", "data-failure", "manual"),
+        required=True,
+    )
     telegram.add_argument("--request-id")
     telegram.add_argument("--store-root", type=Path, required=True)
     return parser
@@ -75,10 +80,10 @@ async def _run_telegram(
         max_value_bytes=config.max_value_bytes,
     )
     clock = lambda: datetime.now(settings.tzinfo)
-    if args.mode == "scheduled":
-        return await run_scheduled_notification(
-            settings, store, clock=clock
-        )
+    if args.mode == "daily":
+        return await run_daily_report(settings, store, clock=clock)
+    if args.mode == "data-failure":
+        return await run_data_failure_notification(settings, store, clock=clock)
     if not args.request_id:
         raise ValueError("--request-id is required for manual Telegram mode")
     return await run_manual_notification(

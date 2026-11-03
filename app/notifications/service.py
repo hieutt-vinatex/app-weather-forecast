@@ -78,10 +78,9 @@ class NotificationService:
         )
         self.last_status = "starting"
         logger.info(
-            "Notification scheduler started time=%s range=%d-%d dry_run=%s targets=%d",
+            "Notification scheduler started time=%s threshold=%d-plus dry_run=%s targets=%d",
             self._settings.notification_send_time,
             self._settings.notification_min_days,
-            self._settings.notification_max_days,
             self._settings.notification_dry_run,
             len(self._dispatcher.targets()),
         )
@@ -140,7 +139,6 @@ class NotificationService:
                 snapshot,
                 now=now,
                 min_days=self._settings.notification_min_days,
-                max_days=self._settings.notification_max_days,
                 send_time=self._settings.notification_send_time_value,
             )
             self.last_reference_date = (
@@ -157,15 +155,8 @@ class NotificationService:
             assert evaluation.event_key is not None
             event_key = (
                 f"{evaluation.event_key}:"
-                f"{self._settings.notification_min_days}-{self._settings.notification_max_days}"
+                f"{self._settings.notification_min_days}-plus"
             )
-
-            if evaluation.status == "no_match":
-                if not await self._state_store.is_no_match(event_key):
-                    await self._state_store.mark_no_match(event_key, now)
-                    logger.info("No matching absence numbers event=%s", event_key)
-                self.last_error = None
-                return []
 
             sent_targets = await self._state_store.sent_targets(event_key)
             pending = [target for target in targets if target.key not in sent_targets]
@@ -177,7 +168,6 @@ class NotificationService:
             message = format_alert_message(
                 evaluation,
                 min_days=self._settings.notification_min_days,
-                max_days=self._settings.notification_max_days,
             )
 
             if self._settings.notification_dry_run:
@@ -292,7 +282,6 @@ class NotificationService:
                 snapshot,
                 now=now,
                 min_days=self._settings.notification_min_days,
-                max_days=self._settings.notification_max_days,
             )
             reference_date = (
                 evaluation.reference_date.isoformat()
@@ -315,7 +304,6 @@ class NotificationService:
                 evaluation,
                 checked_at=now,
                 min_days=self._settings.notification_min_days,
-                max_days=self._settings.notification_max_days,
             )
             if self._settings.notification_dry_run:
                 deliveries = tuple(
@@ -374,7 +362,8 @@ class NotificationService:
             "sendTime": self._settings.notification_send_time,
             "timezone": self._settings.realtime_timezone,
             "minDays": self._settings.notification_min_days,
-            "maxDays": self._settings.notification_max_days,
+            "maxDays": None,
+            "threshold": f"{self._settings.notification_min_days}-plus",
             "configuredChannels": sorted({target.channel for target in targets}),
             "configuredTargetCount": len(targets),
             "lastStatus": self.last_status,
