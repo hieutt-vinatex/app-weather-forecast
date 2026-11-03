@@ -2,13 +2,9 @@ name: Data sync and Pages deploy
 
 on:
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "45 18 * * *"
       timezone: "Asia/Ho_Chi_Minh"
-    - cron: "47-57/5 17 * * *"
-      timezone: "Asia/Ho_Chi_Minh"
-    - cron: "2-57/5 18 * * *"
-      timezone: "Asia/Ho_Chi_Minh"
-    - cron: "2 19 * * *"
+    - cron: "45 19-23 * * *"
       timezone: "Asia/Ho_Chi_Minh"
   workflow_dispatch:
     inputs:
@@ -72,16 +68,11 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_MODE: ${{ inputs.mode }}
           GITHUB_JOB_TIMEOUT_SECONDS: "1200"
         run: |
           if [[ "$EVENT_NAME" == "schedule" ]]; then
-            if [[ "$EVENT_SCHEDULE" == "17 3 * * *" ]]; then
-              mode="full"
-            else
-              mode="incremental"
-            fi
+            mode="scheduled"
           else
             mode="${INPUT_MODE:-full}"
           fi
@@ -91,8 +82,12 @@ jobs:
         shell: bash
         run: |
           change_root="$(mktemp -d "$RUNNER_TEMP/data-change.XXXXXX")"
-          mkdir -p "$change_root"
-          cp -a publication/site/data "$change_root/data"
+          mkdir -p "$change_root/site" "$change_root/state"
+          cp -a publication/site/data "$change_root/site/data"
+          if [[ -f publication/state/daily-data-update.json ]]; then
+            cp -a publication/state/daily-data-update.json \
+              "$change_root/state/daily-data-update.json"
+          fi
           echo "path=$change_root" >> "$GITHUB_OUTPUT"
       - name: Verify and push data safely
         shell: bash
@@ -108,9 +103,17 @@ jobs:
 
             rm -rf publication/site/data
             mkdir -p publication/site
-            cp -a "$CHANGE_ROOT/data" publication/site/data
+            cp -a "$CHANGE_ROOT/site/data" publication/site/data
+            if [[ -f "$CHANGE_ROOT/state/daily-data-update.json" ]]; then
+              mkdir -p publication/state
+              cp -a "$CHANGE_ROOT/state/daily-data-update.json" \
+                publication/state/daily-data-update.json
+            fi
             python source/scripts/verify_cloud_contracts.py --publication-root publication
-            git -C publication add site/data
+            git -C publication add --all site/data
+            if [[ -f publication/state/daily-data-update.json ]]; then
+              git -C publication add state/daily-data-update.json
+            fi
             if ! git -C publication diff --cached --quiet; then
               git -C publication commit -m "data: publish latest snapshots"
             fi

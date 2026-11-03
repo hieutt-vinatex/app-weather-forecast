@@ -2,18 +2,21 @@ name: Telegram notification
 
 on:
   schedule:
-    - cron: "7-52/15 9-11 * * *"
+    - cron: "0-45/15 9-11 * * *"
       timezone: "Asia/Ho_Chi_Minh"
-    - cron: "7 12 * * *"
+    - cron: "0 12 * * *"
       timezone: "Asia/Ho_Chi_Minh"
+  workflow_run:
+    workflows: ["Data sync and Pages deploy"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       mode:
         description: Notification mode
         required: true
-        default: scheduled
+        default: daily
         type: choice
-        options: [scheduled, manual]
+        options: [daily, manual]
       request_id:
         description: Optional UUID for a manual operation
         required: false
@@ -28,6 +31,10 @@ concurrency:
 
 jobs:
   notify:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -73,10 +80,24 @@ jobs:
       - name: Run bounded Telegram job
         shell: bash
         run: |
-          mode="scheduled"
+          case "$EVENT_NAME" in
+            schedule)
+              mode="daily"
+              ;;
+            workflow_run)
+              mode="data-failure"
+              ;;
+            workflow_dispatch)
+              mode="${INPUT_MODE:-daily}"
+              ;;
+            *)
+              echo "Unsupported event: $EVENT_NAME"
+              exit 1
+              ;;
+          esac
+
           request_id=""
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            mode="${INPUT_MODE:-scheduled}"
             request_id="$INPUT_REQUEST_ID"
           fi
 
