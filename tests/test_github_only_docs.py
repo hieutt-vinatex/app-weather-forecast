@@ -57,22 +57,55 @@ def test_bootstrap_order_and_manual_workflow_paths_are_explicit():
     assert "Actions → Telegram notification → Run workflow" in runbook
     assert "mode=full" in runbook
     assert "mode=incremental" in runbook
-    assert "mode=scheduled" in runbook
+    assert "mode=daily" in runbook
     assert "mode=manual" in runbook
 
 
 def test_schedules_freshness_telegram_and_operational_caveats_are_documented():
     docs = all_active_docs()
-    assert "03:17" in docs
-    assert "17:47–19:02" in docs
-    assert "09:07–12:07" in docs
-    assert "10–15 phút" in docs
+    assert "18:45" in docs
+    assert "19:45–23:45" in docs
+    assert "09:00–12:00" in docs
+    assert ">=20 ngày" in docs
     assert "dữ liệu mới nhất đã xuất bản" in docs
     assert "không cần chờ dữ liệu của ngày đang quay" in docs
     assert "có thể bị trễ" in docs
     assert "60 ngày" in docs
     assert "commit tốt gần nhất" in docs
     assert "manifest trước" in docs
+    assert "snapshot cũ" in docs
+    assert "DỮ LIỆU CŨ" in docs
+    assert "Không có số nào đạt ngưỡng" in docs
+    assert "không đảm bảo bắt đầu chính xác" in docs
+
+
+def test_daily_state_retry_and_rollout_observation_are_documented_safely():
+    runbook = text("docs/CLOUD_DEPLOYMENT.md")
+    status = text("docs/DEPLOYMENT_STATUS.md")
+    for state_path in (
+        "site/data/status.json",
+        "state/daily-data-update.json",
+        "state/telegram-ledger.json",
+    ):
+        assert state_path in runbook
+    assert "mỗi giờ đến 23:45" in runbook
+    assert "cảnh báo ngay lần thất bại đầu tiên" in runbook
+    assert "không sao chép toàn bộ nội dung state" in runbook.lower()
+    assert "Chưa xác nhận production cho lịch Native mới" in status
+    assert "[ ] Lượt dữ liệu 18:45" in status
+    assert "[ ] Báo cáo Telegram 09:00" in status
+
+
+def test_active_docs_drop_retired_schedule_and_bounded_threshold_claims():
+    docs = all_active_docs()
+    for retired in (
+        "03:17",
+        "17:47–19:02",
+        "09:07–12:07",
+        "19–25",
+        "mode=scheduled",
+    ):
+        assert retired not in docs
 
 
 def test_active_docs_do_not_instruct_retired_provider_setup():

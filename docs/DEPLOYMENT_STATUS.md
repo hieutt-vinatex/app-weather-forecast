@@ -1,6 +1,6 @@
 # Trạng thái triển khai GitHub-only
 
-Cập nhật lần cuối: **2026-11-02** (`Asia/Ho_Chi_Minh`).
+Cập nhật lần cuối: **2026-11-03** (`Asia/Ho_Chi_Minh`).
 
 ## Production hiện tại
 
@@ -8,7 +8,8 @@ Cập nhật lần cuối: **2026-11-02** (`Asia/Ho_Chi_Minh`).
 - Source branch/default branch: `develop`
 - Commit ứng dụng đã xác minh tại cutover: `6d5b0623381d01903bb5147406502a12040d2e50`
 - Nền tảng: GitHub Pages + GitHub Actions
-- Telegram production: đã bật gửi thật; manual và scheduled đều đã được kiểm tra.
+- Telegram production: đã bật gửi thật; manual và cơ chế chống trùng của phiên
+  bản trước đã được kiểm tra.
 
 Không có token, Chat ID hoặc HMAC key nào được ghi trong tài liệu này.
 
@@ -21,7 +22,7 @@ Không có token, Chat ID hoặc HMAC key nào được ghi trong tài liệu n�
 - Snapshot chứa đúng 30/60/90 bản ghi; ngày mới nhất là `2026-11-02`.
 - Dashboard và các tài nguyên dưới base path `/app-weather-forecast/` trả HTTP 200.
 
-## Workflow đã xác minh
+## Baseline production đã xác minh trước thay đổi Native
 
 - [CI trên commit production](https://github.com/hieutt-vinatex/app-weather-forecast/actions/runs/41411321006): thành công.
 - [Bootstrap GitHub Pages](https://github.com/hieutt-vinatex/app-weather-forecast/actions/runs/41411402672): thành công sau khi chọn Pages Source là GitHub Actions.
@@ -35,13 +36,33 @@ Không có token, Chat ID hoặc HMAC key nào được ghi trong tài liệu n�
 
 Biến `NOTIFICATION_DRY_RUN` đang là `false` để lịch Telegram production có thể gửi thật. Ledger chỉ lưu target đã HMAC hóa và lần chạy lại cùng event không gửi trùng.
 
+Các run trên là bằng chứng baseline ngày 2026-11-02, không phải bằng chứng cho lịch
+Native mới.
+
+## Triển khai Native mới
+
+Đã hoàn tất trong source `develop`:
+
+- Một lượt cập nhật chính lúc 18:45; nếu thất bại thì retry mỗi giờ đến 23:45.
+- Cảnh báo Telegram sau lần cập nhật thất bại đầu tiên.
+- Báo cáo từ 09:00 với catch-up đến 12:00, ngưỡng `>=20 ngày`, chống gửi lặp theo
+  target và vẫn gửi xác nhận khi không có số đạt ngưỡng.
+- Nếu tối không cập nhật được, báo cáo sáng dùng snapshot cũ và ghi rõ dữ liệu cũ.
+- Workflow dùng chung mutex, không force-push và chỉ ghi đúng phạm vi dữ liệu/state.
+
+Kiểm thử local đã qua toàn bộ backend và `actionlint`. Trạng thái này chỉ xác nhận
+mã và cấu hình workflow; **Chưa xác nhận production cho lịch Native mới** cho đến
+khi có run URL và tin Telegram thực tế.
+
 ## Việc vận hành còn chờ quan sát
 
-Chưa có run mang sự kiện `schedule` vì workflow được bật sau các khung giờ tự động ngày 2026-11-02. Cần quan sát đủ hai trường hợp trước khi đóng cutover và dọn mã provider cũ:
+Cần quan sát đủ chu kỳ mới trước khi đóng cutover:
 
-1. Một lượt incremental tự động trong cửa sổ 17:47–19:02.
-2. Một lượt Telegram tự động trong cửa sổ 09:07–12:07.
+- [ ] Lượt dữ liệu 18:45 thành công hoặc retry 19:45–23:45 phục hồi, kèm run URL.
+- [ ] Báo cáo Telegram 09:00 hoặc một lượt catch-up trước 12:00 tới đúng group.
+- [ ] Một tình huống không có ứng viên vẫn gửi xác nhận (có thể kiểm tra bằng
+  fixture/dry-run trước, production chỉ khi dữ liệu tự nhiên phù hợp).
 
-Full sync tự động lúc 03:17 cũng nên được kiểm tra trong lần vận hành kế tiếp. Lịch GitHub Actions có thể khởi động trễ; xem [runbook production](./CLOUD_DEPLOYMENT.md) để biết giới hạn và cách chạy thủ công.
-
-Mã Cloudflare/Vercel cũ hiện được giữ lại làm đường rollback. Không xóa tài nguyên bên ngoài cho đến khi hoàn tất quan sát lịch tự động và hết thời gian rollback mong muốn.
+Lịch GitHub Actions có thể khởi động trễ; xem
+[runbook production](./CLOUD_DEPLOYMENT.md) để biết runtime guard, các lượt
+catch-up và cách chạy thủ công.

@@ -18,8 +18,8 @@ GitHub Actions ──đồng bộ──> nhánh gh-pages/site/data
 ```
 
 - GitHub Pages phục vụ bundle React và snapshot tĩnh theo version.
-- GitHub Actions chạy full sync hằng ngày, incremental sync trong giờ quay và
-  Telegram vào buổi sáng.
+- GitHub Actions cập nhật một lần lúc 18:45, tự thử lại mỗi giờ đến 23:45 nếu
+  thất bại, rồi gửi báo cáo Telegram từ 09:00 sáng hôm sau.
 - Dashboard chỉ tải file tĩnh; token bot và chat ID không đi vào bundle hay
   Pages artifact.
 - Hai thao tác thủ công **Làm mới dữ liệu** và **Gửi Telegram ngay** mở workflow
@@ -34,12 +34,16 @@ Hướng dẫn triển khai đầy đủ: [docs/CLOUD_DEPLOYMENT.md](docs/CLOUD_
 
 - Dữ liệu hôm qua và các ngày trước hiển thị ngay từ snapshot gần nhất; người
   dùng không cần chờ dữ liệu của ngày đang quay.
-- Kết quả ngày đang quay thường có độ trễ khoảng 10–15 phút trên lịch miễn phí.
+- Kết quả ngày hiện tại được xuất bản sau lượt 18:45 thành công. Nếu nguồn lỗi,
+  snapshot trước vẫn xem được trong khi các lượt 19:45–23:45 tự phục hồi.
 - Dashboard tự đọc manifest mới theo chu kỳ 30 giây khi tab đang hoạt động và
   chậm hơn khi tab ở nền.
 - Khi đồng bộ lỗi, manifest đang hoạt động không đổi; lịch sử hợp lệ gần nhất vẫn
   được giữ và trạng thái chuyển sang chậm cập nhật.
 - Có thể chọn lại phạm vi 30/60/90 ngày bất kỳ lúc nào.
+- Báo cáo Telegram liệt kê toàn bộ số chưa xuất hiện `>=20 ngày`. Nếu cập nhật
+  tối thất bại, báo cáo sáng vẫn dùng snapshot cũ, ghi rõ **DỮ LIỆU CŨ**; kể cả
+  khi không có số đạt ngưỡng vẫn gửi xác nhận “Không có số nào đạt ngưỡng”.
 
 ## Thành phần chính
 

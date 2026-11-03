@@ -9,8 +9,8 @@ không cần hoạt động.
 - Repository public dùng standard hosted runner và GitHub Pages cho website tĩnh.
 - Nhánh `develop` chứa source, test và workflow; yêu cầu default branch `develop`
   để lịch và nút chạy thủ công luôn lấy đúng workflow.
-- Nhánh `gh-pages` do workflow quản lý: `site/` chứa bundle + JSON công khai,
-  `state/` chứa ledger Telegram đã HMAC.
+- Nhánh `gh-pages` do workflow quản lý: `site/` chứa bundle + JSON công khai;
+  `state/` chứa trạng thái cập nhật ngày và ledger Telegram đã HMAC.
 - Pages artifact chỉ lấy `gh-pages/site`; `state` không được đưa vào website.
 - URL production: <https://hieutt-vinatex.github.io/app-weather-forecast/>.
 
@@ -50,7 +50,7 @@ Thực hiện đúng thứ tự này để khởi tạo website trước, sau đ
 8. Kiểm tra 30/60/90 ngày tại URL production; cả ba phạm vi phải có dữ liệu,
    ngày tăng dần và không có lỗi tải manifest.
 9. Chạy Telegram dry-run tại **Actions → Telegram notification → Run workflow**,
-   chọn `mode=scheduled` trong khi `NOTIFICATION_DRY_RUN=true`.
+   chọn `mode=daily` trong khi `NOTIFICATION_DRY_RUN=true`.
 10. Bật gửi Telegram thật bằng cách đổi variable thành
     `NOTIFICATION_DRY_RUN=false`, rồi chạy `mode=manual` với group test trước.
 11. Theo dõi lịch tự động ít nhất một cửa sổ quay và một cửa sổ Telegram trước
@@ -75,8 +75,9 @@ Nếu nguồn lỗi, job xuất bản trạng thái lỗi nhưng giữ manifest 
 
 Mở **Actions → Telegram notification → Run workflow**:
 
-- `mode=scheduled`: áp dụng điều kiện 19–25 ngày và ledger chống gửi lặp.
-- `mode=manual`: gửi báo cáo ngay; cố ý không ghi scheduled ledger nên chạy lại
+- `mode=daily`: lập báo cáo hằng ngày cho mọi số chưa xuất hiện `>=20 ngày` và
+  dùng ledger chống gửi lặp theo từng group.
+- `mode=manual`: gửi báo cáo ngay; cố ý không ghi daily ledger nên chạy lại
   có thể tạo thêm một tin.
 
 Hai liên kết tương tự có sẵn trên dashboard; chúng chỉ mở giao diện Actions, không
@@ -86,25 +87,50 @@ Hai liên kết tương tự có sẵn trên dashboard; chúng chỉ mở giao d
 
 Tất cả lịch dùng `Asia/Ho_Chi_Minh`:
 
-- Full sync: 03:17 mỗi ngày.
-- Incremental sync: mỗi 5 phút trong cửa sổ 17:47–19:02.
-- Telegram: mỗi 15 phút trong cửa sổ 09:07–12:07.
+- Dữ liệu: lượt chính lúc 18:45. Nếu chưa thành công, workflow chạy lại mỗi giờ
+  đến 23:45 (19:45–23:45); sau khi thành công, các lượt sau tự no-op.
+- Telegram: lượt chính lúc 09:00; các lượt catch-up mỗi 15 phút trong
+  09:00–12:00 chỉ gửi cho target chưa nhận, rồi dừng nhờ ledger.
 
-Lịch hosted runner có thể bị trễ khi hệ thống đông; đây không phải đồng hồ realtime.
-Kết quả ngày đang quay thường chậm 10–15 phút. Dữ liệu hôm qua và lịch sử đã xuất
-bản không cần chờ dữ liệu của ngày đang quay.
+Lịch hosted runner có thể bị trễ khi hệ thống đông. GitHub không đảm bảo bắt đầu chính xác
+tại phút đã cấu hình. Runtime guard vẫn gắn lượt dữ liệu với đúng ngày nghiệp vụ;
+các lượt retry/catch-up xử lý lần chạy trễ. Dữ liệu hôm qua và lịch sử đã xuất bản
+không cần chờ dữ liệu của ngày đang quay.
 
 Với repository public, GitHub có thể tự disable scheduled workflow sau 60 ngày
 không có hoạt động repository. Nếu lịch không chạy, kiểm tra banner trong tab
 Actions, enable lại workflow và chạy thủ công một lần. Không dùng lịch này cho
 tác vụ cần thời điểm chính xác tuyệt đối.
 
-## Hành vi Telegram latest-data
+## Hành vi thất bại và Telegram latest-data
 
-Trong cửa sổ buổi sáng, Telegram đánh giá dữ liệu mới nhất đã xuất bản, kể cả khi
-snapshot hoàn chỉnh gần nhất là của hôm qua hoặc cũ hơn. Job không đợi một kỳ mới
-đang quay. Scheduled ledger bảo đảm mỗi target chỉ nhận một lần cho cùng event;
-target được lưu dưới dạng HMAC-SHA256, không phải chat ID thô.
+- Nếu lượt 18:45 lỗi, workflow Telegram nhận sự kiện hoàn tất. Hệ thống gửi
+  cảnh báo ngay lần thất bại đầu tiên. Data workflow tiếp tục thử mỗi giờ đến 23:45;
+  các lỗi lặp lại trong cùng ngày không tạo thêm cảnh báo cho target đã nhận.
+- Nếu mọi lượt đều thất bại, báo cáo 09:00 vẫn đánh giá snapshot cũ gần nhất và
+  ghi cảnh báo “Đang sử dụng dữ liệu cũ” — tức **DỮ LIỆU CŨ** — kèm ngày kỳ dữ
+  liệu, số lần thử và mã lỗi. Nếu chưa từng có snapshot hợp lệ, tin sáng ghi rõ
+  không thể lập báo cáo dữ liệu.
+- Ngưỡng là một chiều: mọi số chưa xuất hiện `>=20 ngày` đều được liệt kê, không
+  có giới hạn trên. Nếu không có ứng viên, hệ thống vẫn gửi xác nhận “Không có số
+  nào đạt ngưỡng” thay vì im lặng.
+- Job không đợi một kỳ mới đang quay. Daily ledger bảo đảm mỗi target chỉ nhận
+  một lần cho cùng event; target được lưu dưới dạng HMAC-SHA256, không phải chat
+  ID thô.
+
+## Ba file trạng thái cần quan sát
+
+- `site/data/status.json`: trạng thái job an toàn để dashboard đọc; file này nằm
+  trong Pages artifact công khai.
+- `state/daily-data-update.json`: ngày nghiệp vụ, trạng thái, số lần thử và phiên
+  bản đã xuất bản. File không nằm trong Pages artifact nhưng nhánh `gh-pages` của
+  repository public vẫn có thể đọc được.
+- `state/telegram-ledger.json`: event và định danh target đã HMAC để chống gửi
+  lặp; không chứa chat ID thô, token hay HMAC key.
+
+Khi xử lý sự cố, ưu tiên xem Summary/log an toàn của workflow và các trường
+`status`, `businessDate`, `attemptCount`, `sourceReferenceDate`. Không sao chép toàn bộ nội dung state
+vào issue, chat hoặc log công khai.
 
 ## Xác minh sau deploy
 
@@ -112,8 +138,8 @@ target được lưu dưới dạng HMAC-SHA256, không phải chat ID thô.
 2. Đối chiếu ngày mới nhất, trạng thái freshness và bảng lịch sử.
 3. Trong Actions, mở log data job và xác nhận version + record count, không có
    secret hay chat ID.
-4. Chạy Telegram scheduled khi dry-run; sau đó gửi manual tới group test.
-5. Sau khi bật thật, chạy scheduled hai lần cho cùng event và xác nhận lần sau là
+4. Chạy Telegram daily khi dry-run; sau đó gửi manual tới group test.
+5. Sau khi bật thật, chạy daily hai lần cho cùng event và xác nhận lần sau là
    no-op/already delivered.
 
 Pages/CDN có thể cần vài phút sau deployment. Nếu vừa full sync xong mà trình
@@ -137,7 +163,8 @@ sync đồng thời.
    **Deploy GitHub Pages**.
 3. Nếu bundle tốt nhưng dữ liệu mới sai, giữ hoặc khôi phục manifest trước trên
    `gh-pages`; không xóa version mà manifest/previous pointer còn tham chiếu.
-4. Chạy full sync từ source tốt sau khi đã xác định nguyên nhân.
+4. Chạy full sync từ source tốt sau khi đã xác định nguyên nhân; lượt thành công
+   sẽ khôi phục trạng thái ngày tương ứng.
 5. Enable lại lịch, kiểm tra 30/60/90 và dry-run Telegram trước khi gửi thật.
 
 Không force-push `gh-pages`. Workflow tự fetch, nạp lại và reapply thay đổi giới
