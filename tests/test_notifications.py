@@ -64,7 +64,12 @@ def _snapshot(*, incomplete_offset: int | None = None):
     return gdb._assemble(90, outcomes, state), reference
 
 
-def _minimum_snapshot(*, days: int = 90, future_partial: bool = False):
+def _minimum_snapshot(
+    *,
+    days: int = 90,
+    future_partial: bool = False,
+    future_complete: bool = False,
+):
     settings = make_settings()
     gdb = GdbService(
         settings,
@@ -93,7 +98,7 @@ def _minimum_snapshot(*, days: int = 90, future_partial: bool = False):
                 ok=True,
             )
         )
-    if future_partial:
+    if future_partial or future_complete:
         future = reference + timedelta(days=1)
         outcomes.append(
             DayOutcome(
@@ -101,7 +106,7 @@ def _minimum_snapshot(*, days: int = 90, future_partial: bool = False):
                 source_url=f"https://example.test/{future.isoformat()}",
                 gdb="06",
                 prizes={"db": ("06",)},
-                complete=False,
+                complete=future_complete,
                 ok=True,
             )
         )
@@ -153,6 +158,21 @@ def test_minimum_absence_does_not_claim_never_seen_with_short_coverage():
     assert evaluation.status == "no_match"
     assert evaluation.reference_date == reference
     assert evaluation.candidates == ()
+
+
+def test_minimum_absence_ignores_complete_future_dated_records():
+    snapshot, reference = _minimum_snapshot(future_complete=True)
+
+    evaluation = evaluate_snapshot_now(
+        snapshot,
+        now=datetime(2026, 10, 14, 9, 0, tzinfo=TZ),
+        min_days=20,
+    )
+
+    by_number = {item.number: item for item in evaluation.candidates}
+    assert evaluation.reference_date == reference
+    assert by_number["06"].last_seen is None
+    assert by_number["06"].is_lower_bound is True
 
 
 def test_daily_report_formats_fresh_stale_zero_and_lower_bound_results():

@@ -83,6 +83,10 @@ def test_site_deploy_is_gated_by_trusted_successful_ci_push():
         "python source/scripts/verify_cloud_contracts.py --publication-root publication"
         in source
     )
+    assert "pip install -r source/requirements-cloud.txt" in source
+    assert source.index("actions/setup-python@v5") < source.index(
+        "pip install -r source/requirements-cloud.txt"
+    ) < source.index("python source/scripts/verify_cloud_contracts.py")
 
 
 def test_data_schedule_inputs_and_failure_publication_are_pinned():
@@ -137,6 +141,19 @@ def test_telegram_schedule_inputs_secrets_and_state_boundary_are_pinned():
     assert "--store-root publication" in source
     assert 'mode="daily"' in source
     assert 'mode="data-failure"' in source
+    assert "id: notify" in source
+    assert "continue-on-error: true" in source
+    assert "steps.notify.outcome" in source
+
+    run_position = source.index("Run bounded Telegram job")
+    capture_position = source.index(
+        "Verify publication and capture bounded state change"
+    )
+    push_position = source.index("Push Telegram state safely")
+    failure_position = source.index(
+        "Report Telegram job failure after safe state publication"
+    )
+    assert run_position < capture_position < push_position < failure_position
 
 
 def test_telegram_workflow_run_is_trusted_and_cannot_modify_site_data():

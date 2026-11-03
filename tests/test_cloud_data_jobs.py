@@ -451,6 +451,91 @@ async def test_scheduled_failure_preserves_manifest_then_retry_recovers(monkeypa
     assert calls == 2
 
 
+async def test_scheduled_incomplete_current_draw_preserves_manifest_and_retries(
+    monkeypatch,
+):
+    store = MemoryStore()
+    settings = make_settings()
+    old_manifest = await publish_initial(store, date(2026, 10, 28))
+    calls = 0
+
+    async def changing_fetch(settings_arg, days):
+        nonlocal calls
+        del settings_arg
+        calls += 1
+        if calls == 1:
+            return [
+                outcome_for(days[0], 10),
+                outcome_for(days[1], 11, complete=False),
+            ]
+        return [outcome_for(day, 20 + index) for index, day in enumerate(days)]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", changing_fetch)
+
+    failed = await run_scheduled_data_job(
+        settings, store, clock=local_clock(18, 45)
+    )
+    failed_state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+    manifest_after_failure = PublicationManifest.model_validate(
+        await store.get_json("manifest:v1")
+    )
+    recovered = await run_scheduled_data_job(
+        settings, store, clock=local_clock(19, 45)
+    )
+
+    assert failed.status == "failed"
+    assert failed.reason == "invalid_upstream_data"
+    assert failed_state.status == "failed"
+    assert manifest_after_failure.version == old_manifest.version
+    assert recovered.status == "succeeded"
+    assert calls == 2
+
+
+async def test_manual_partial_publication_does_not_suppress_scheduled_recovery(
+    monkeypatch,
+):
+    store = MemoryStore()
+    settings = make_settings()
+    await publish_initial(store, date(2026, 10, 28))
+    calls = 0
+
+    async def changing_fetch(settings_arg, days):
+        nonlocal calls
+        del settings_arg
+        calls += 1
+        if calls == 1:
+            return [
+                outcome_for(days[0], 10),
+                outcome_for(days[1], 11, complete=False),
+            ]
+        return [outcome_for(day, 20 + index) for index, day in enumerate(days)]
+
+    monkeypatch.setattr("app.cloud.data_jobs._fetch_outcomes", changing_fetch)
+
+    manual = await run_data_job(
+        settings,
+        store,
+        mode="incremental",
+        clock=local_clock(18, 40),
+    )
+    scheduled = await run_scheduled_data_job(
+        settings,
+        store,
+        clock=local_clock(19, 45),
+    )
+    state = DailyDataUpdateState.model_validate(
+        await store.get_json(DAILY_DATA_UPDATE_KEY)
+    )
+
+    assert manual.status == "succeeded"
+    assert scheduled.status == "succeeded"
+    assert calls == 2
+    assert state.attempt_count == 1
+    assert state.source_reference_date == date(2026, 10, 29)
+
+
 async def test_cancelled_scheduled_data_records_safe_timeout(monkeypatch):
     store = MemoryStore()
     settings = make_settings()

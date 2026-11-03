@@ -45,7 +45,9 @@ def evaluate_snapshot(
     now: datetime,
     min_days: int,
     send_time: time,
+    reference_not_after: date | None = None,
 ) -> AlertEvaluation:
+    reference_limit = reference_not_after or now.date()
     complete_records = [record for record in snapshot.data if record.draw_complete]
     dated_records = []
     for record in complete_records:
@@ -53,7 +55,8 @@ def evaluate_snapshot(
             record_date = date.fromisoformat(record.date)
         except ValueError:
             continue
-        dated_records.append((record_date, record))
+        if record_date <= reference_limit:
+            dated_records.append((record_date, record))
     if not dated_records:
         return AlertEvaluation(status="waiting", reason="no_complete_draw")
 
@@ -139,9 +142,11 @@ def evaluate_snapshot_now(
         if not record.draw_complete:
             continue
         try:
-            complete_dates.append(date.fromisoformat(record.date))
+            record_date = date.fromisoformat(record.date)
         except ValueError:
             continue
+        if record_date <= now.date():
+            complete_dates.append(record_date)
     if not complete_dates:
         return AlertEvaluation(status="waiting", reason="no_complete_draw")
     reference_date = max(complete_dates)
@@ -155,6 +160,7 @@ def evaluate_snapshot_now(
         now=evaluation_time,
         min_days=min_days,
         send_time=time.min,
+        reference_not_after=now.date(),
     )
 
 

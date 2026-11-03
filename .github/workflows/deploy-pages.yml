@@ -48,6 +48,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: source/requirements-cloud.txt
+      - name: Install publication verifier dependencies
+        run: pip install -r source/requirements-cloud.txt
       - name: Build dashboard
         working-directory: source/frontend
         run: npm ci && npm run build

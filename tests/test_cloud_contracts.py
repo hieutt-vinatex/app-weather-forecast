@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +20,9 @@ from scripts.verify_cloud_contracts import (
     verify_fixture_directory,
     verify_publication_root,
 )
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FixtureStore:
@@ -98,6 +103,22 @@ def write_json(path: Path, value: Any) -> None:
         json.dumps(value, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+
+
+def test_verifier_script_resolves_application_imports_when_run_directly():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/verify_cloud_contracts.py"),
+            "--help",
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 async def test_all_published_ranges_match_public_contract(tmp_path):

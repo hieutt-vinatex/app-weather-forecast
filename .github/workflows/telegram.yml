@@ -78,6 +78,8 @@ jobs:
           git -C publication config user.name "github-actions[bot]"
           git -C publication config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Run bounded Telegram job
+        id: notify
+        continue-on-error: true
         shell: bash
         run: |
           case "$EVENT_NAME" in
@@ -150,3 +152,8 @@ jobs:
             echo "Publication changed remotely; retrying attempt $attempt of 3"
           done
           test "$published" = true
+      - name: Report Telegram job failure after safe state publication
+        if: steps.notify.outcome != 'success'
+        run: |
+          echo "Telegram delivery was incomplete; persisted delivery state for a safe retry."
+          exit 1

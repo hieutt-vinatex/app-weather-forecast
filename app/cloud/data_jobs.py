@@ -53,8 +53,15 @@ async def incremental_sync(
     store: JsonStore,
     *,
     clock: Clock,
+    require_complete_current: bool = False,
 ) -> DataJobResult:
-    return await _sync(settings, store, mode="incremental", clock=clock)
+    return await _sync(
+        settings,
+        store,
+        mode="incremental",
+        clock=clock,
+        require_complete_current=require_complete_current,
+    )
 
 
 async def run_scheduled_data_job(
@@ -75,10 +82,13 @@ async def run_scheduled_data_job(
     business_date = now.date()
     state = await _load_daily_state(store)
     manifest = await _load_manifest(store)
-    if (
-        manifest is not None
-        and manifest.source_reference_date == business_date
+    if await _publication_has_complete_date(
+        settings,
+        store,
+        manifest,
+        business_date,
     ):
+        assert manifest is not None
         healed = _successful_daily_state(
             state,
             business_date=business_date,
@@ -120,7 +130,12 @@ async def run_scheduled_data_job(
     await _persist_daily_state(store, pending)
     frozen_clock = lambda: now
     try:
-        result = await incremental_sync(settings, store, clock=frozen_clock)
+        result = await incremental_sync(
+            settings,
+            store,
+            clock=frozen_clock,
+            require_complete_current=True,
+        )
     except asyncio.CancelledError:
         await _persist_daily_state(
             store,
@@ -240,6 +255,7 @@ async def run_data_job(
         await _persist_operation(settings, store, terminal)
     if result.status in {"succeeded", "no_change"}:
         await _record_manual_recovery(
+            settings,
             store,
             business_date=created_at.date(),
             attempted_at=created_at,
@@ -253,6 +269,7 @@ async def _sync(
     *,
     mode: str,
     clock: Clock,
+    require_complete_current: bool = False,
 ) -> DataJobResult:
     started_at = _now(settings, clock)
     running = JobRecord(
@@ -284,6 +301,18 @@ async def _sync(
 
         if not any(item.ok and item.result_count > 0 for item in outcomes):
             raise InvalidSourceDataError("no valid draw records")
+        if require_complete_current:
+            current = next(
+                (item for item in outcomes if item.day == started_at.date()),
+                None,
+            )
+            if (
+                current is None
+                or not current.ok
+                or not current.complete
+                or current.result_count == 0
+            ):
+                raise InvalidSourceDataError("current draw is incomplete")
         finished_at = _now(settings, clock)
         completed_job = JobRecord(
             kind="data",
@@ -455,6 +484,27 @@ async def _load_manifest(store: JsonStore) -> PublicationManifest | None:
     return PublicationManifest.model_validate(raw)
 
 
+async def _publication_has_complete_date(
+    settings: Settings,
+    store: JsonStore,
+    manifest: PublicationManifest | None,
+    business_date: date,
+) -> bool:
+    if manifest is None or manifest.source_reference_date != business_date:
+        return False
+    try:
+        history = await _publisher(settings, store).load_active_history()
+    except Exception:
+        return False
+    return any(
+        item.day == business_date
+        and item.ok
+        and item.complete
+        and item.result_count > 0
+        for item in history
+    )
+
+
 def _pending_daily_state(
     previous: DailyDataUpdateState | None,
     *,
@@ -522,14 +572,21 @@ def _successful_daily_state(
 
 
 async def _record_manual_recovery(
+    settings: Settings,
     store: JsonStore,
     *,
     business_date: date,
     attempted_at: datetime,
 ) -> None:
     manifest = await _load_manifest(store)
-    if manifest is None or manifest.source_reference_date != business_date:
+    if not await _publication_has_complete_date(
+        settings,
+        store,
+        manifest,
+        business_date,
+    ):
         return
+    assert manifest is not None
     previous = await _load_daily_state(store)
     state = _successful_daily_state(
         previous,

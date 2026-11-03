@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -15,7 +16,9 @@ from typing import Any, Iterable, Mapping
 
 from pydantic import ValidationError
 
-from app.cloud.contracts import DailyDataUpdateState
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.cloud.contracts import DailyDataUpdateState  # noqa: E402
 
 
 VALID_RANGES = (30, 60, 90)

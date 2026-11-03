@@ -350,6 +350,34 @@ async def test_daily_failed_update_reports_with_explicit_old_snapshot(monkeypatc
     assert "Kỳ dữ liệu: 13/10/2026" in message
 
 
+async def test_daily_partial_current_snapshot_is_never_reported_as_fresh(
+    monkeypatch,
+):
+    store = MemoryStore()
+    partial = ready_snapshot()
+    partial.data[-1] = partial.data[-1].model_copy(
+        update={"draw_complete": False}
+    )
+    seed_snapshot(store, snapshot=partial)
+    seed_daily_state(store, status="succeeded")
+    dispatcher = FakeDispatcher([target("a")])
+    monkeypatch.setattr(
+        "app.cloud.notification_jobs._build_dispatcher",
+        lambda settings, state_store: dispatcher,
+    )
+
+    result = await run_daily_report(
+        make_settings(notification_dry_run=False), store, clock=fixed_clock
+    )
+
+    assert result.status == "delivered"
+    assert result.reference_date == "2026-10-13"
+    message = dispatcher.sent[0][1]
+    assert "Đang sử dụng dữ liệu cũ" in message
+    assert "Mã lỗi: publication_mismatch" in message
+    assert "Kỳ dữ liệu: 13/10/2026" in message
+
+
 async def test_daily_state_write_failure_after_send_allows_at_least_once_retry(
     monkeypatch,
 ):

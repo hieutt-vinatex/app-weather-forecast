@@ -318,6 +318,12 @@ async def _run_daily(
         now=now,
         min_days=settings.notification_min_days,
     )
+    if warning is None and evaluation.reference_date != expected_date:
+        warning = DailyUpdateWarning(
+            expected_date=expected_date,
+            attempt_count=daily_state.attempt_count if daily_state is not None else 0,
+            last_reason="publication_mismatch",
+        )
     if evaluation.status == "waiting" or evaluation.reference_date is None:
         message = format_no_data_daily_message(
             report_date=report_date,
