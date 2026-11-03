@@ -1,7 +1,7 @@
 # Thiết kế cập nhật dữ liệu buổi tối và báo cáo Telegram hằng ngày
 
 **Ngày:** 2026-11-03  
-**Trạng thái:** Chờ người dùng phê duyệt  
+**Trạng thái:** Đã được người dùng phê duyệt
 **Phương án đã chọn:** Hai workflow tách biệt, phối hợp bằng trạng thái an toàn trên `gh-pages`
 
 ## Ý định
