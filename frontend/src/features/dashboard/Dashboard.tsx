@@ -8,6 +8,7 @@ import { useTheme } from "../../utils/theme";
 
 import { PartialWarning, StaleWarning } from "../../components/Alerts";
 import { AbsenceMonitor } from "../../components/AbsenceMonitor";
+import { AdvancedAnalyticsSection } from "../../components/AdvancedAnalyticsSection";
 import { Disclaimer } from "../../components/Disclaimer";
 import { GitHubOperationsLinks } from "../../components/GitHubOperationsLinks";
 import { HistoryTable } from "../../components/HistoryTable";
@@ -175,6 +176,13 @@ export function Dashboard(): JSX.Element {
                       <ColdNumbersList items={statistics.coldNumbers} />
                     </SectionCard>
                   </div>
+
+                  <AdvancedAnalyticsSection
+                    records={data.data}
+                    scope={prizeScope}
+                    scopeLabel={scopeLabel}
+                    theme={theme}
+                  />
 
                   <SectionCard
                     title={`Lịch sử từng kỳ · ${scopeLabel}`}
