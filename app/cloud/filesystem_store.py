@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -95,10 +96,22 @@ class FilesystemJsonStore:
                 temporary_path.unlink()
 
     async def delete(self, key: str) -> None:
+        path = self.path_for_key(key)
         try:
-            self.path_for_key(key).unlink()
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+        versions_root = self._root / "site/data/versions"
+        if path.parent.parent != versions_root:
+            return
+        try:
+            path.parent.rmdir()
         except FileNotFoundError:
             return
+        except OSError as exc:
+            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise
 
     async def list_keys(self, prefix: str = "") -> list[str]:
         if not self._root.exists():

@@ -247,5 +247,21 @@ async def test_filesystem_publication_keeps_three_versions_and_unrelated_files(
     )
     assert len(await store.list_keys("history:v1:")) == 3
     assert len(await store.list_keys("snapshot:v1:")) == 9
+    version_directories = sorted(
+        path
+        for path in (tmp_path / "site/data/versions").iterdir()
+        if path.is_dir()
+    )
+    assert len(version_directories) == 3
+    assert all(
+        {entry.name for entry in directory.iterdir()}
+        == {
+            "history.json",
+            "snapshot-30.json",
+            "snapshot-60.json",
+            "snapshot-90.json",
+        }
+        for directory in version_directories
+    )
     assert asset.read_text(encoding="utf-8") == "asset"
     assert ledger.read_text(encoding="utf-8") == '{"events":{}}'
