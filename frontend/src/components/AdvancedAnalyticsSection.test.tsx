@@ -93,4 +93,30 @@ describe("AdvancedAnalyticsSection", () => {
       .toEqual(["Gap g7", "Scatter g7", "Transition g7"]);
     expect(screen.queryByLabelText(/ all$/)).not.toBeInTheDocument();
   });
+
+  it("constrains chart cards to the mobile grid width", async () => {
+    const user = userEvent.setup();
+    render(
+      <AdvancedAnalyticsSection
+        records={makeSnapshot(30, 1).data}
+        scope="all"
+        scopeLabel="Tất cả giải"
+        theme="light"
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Mở phân tích" }));
+
+    const gapCard = screen.getByRole("heading", { name: "Khoảng cách xuất hiện 00–99" })
+      .closest("section");
+    const scatterCard = screen.getByRole("heading", { name: "Phân tán theo kỳ" })
+      .closest("section");
+    const transitionCard = screen.getByRole("heading", {
+      name: "Ma trận chuyển tiếp chữ số cuối 0–9",
+    }).closest("section");
+
+    expect(gapCard).toHaveClass("min-w-0", "overflow-hidden");
+    expect(scatterCard).toHaveClass("min-w-0", "overflow-hidden");
+    expect(transitionCard).toHaveClass("min-w-0", "overflow-hidden");
+    expect(gapCard?.parentElement).toHaveClass("grid-cols-[minmax(0,1fr)]");
+  });
 });

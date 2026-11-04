@@ -44,10 +44,11 @@ export function AdvancedAnalyticsSection(
 
       {isOpen ? (
         <div id={panelId} className="mt-4 space-y-4">
-          <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-2">
             <SectionCard
               title="Khoảng cách xuất hiện 00–99"
               description="So sánh số kỳ chưa xuất hiện hiện tại với khoảng vắng lớn nhất trong phạm vi."
+              className="min-w-0 overflow-hidden"
             >
               <GapChart records={props.records} scope={props.scope} theme={props.theme} />
             </SectionCard>
@@ -55,6 +56,7 @@ export function AdvancedAnalyticsSection(
             <SectionCard
               title="Phân tán theo kỳ"
               description="Mỗi điểm là một số đuôi theo ngày; điểm lớn hơn biểu thị kết quả trùng trong cùng kỳ."
+              className="min-w-0 overflow-hidden"
             >
               <HistoryScatterChart
                 records={props.records}
@@ -67,6 +69,7 @@ export function AdvancedAnalyticsSection(
           <SectionCard
             title="Ma trận chuyển tiếp chữ số cuối 0–9"
             description="Hàng là chữ số trước, cột là chữ số sau; màu thể hiện tỷ lệ chuyển tiếp trong từng hàng."
+            className="min-w-0 overflow-hidden"
           >
             <TransitionMatrixChart
               records={props.records}
