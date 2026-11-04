@@ -2,10 +2,10 @@ name: Data sync and Pages deploy
 
 on:
   schedule:
-    - cron: "45 18 * * *"
-      timezone: "Asia/Ho_Chi_Minh"
-    - cron: "45 19-23 * * *"
-      timezone: "Asia/Ho_Chi_Minh"
+    # 18:45 Asia/Ho_Chi_Minh (UTC+7).
+    - cron: "45 11 * * *"
+    # 19:45-23:45 Asia/Ho_Chi_Minh (UTC+7).
+    - cron: "45 12-16 * * *"
   workflow_dispatch:
     inputs:
       mode:

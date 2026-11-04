@@ -91,10 +91,10 @@ def test_site_deploy_is_gated_by_trusted_successful_ci_push():
 
 def test_data_schedule_inputs_and_failure_publication_are_pinned():
     source = workflow("data-sync.yml")
-    for cron in ('cron: "45 18 * * *"', 'cron: "45 19-23 * * *"'):
+    for cron in ('cron: "45 11 * * *"', 'cron: "45 12-16 * * *"'):
         assert cron in source
     assert source.count("cron:") == 2
-    assert source.count('timezone: "Asia/Ho_Chi_Minh"') == 2
+    assert "timezone:" not in source
     assert "options: [full, incremental]" in source
     assert 'python-version: "3.12"' in source
     assert "continue-on-error: true" in source
@@ -123,10 +123,10 @@ def test_data_workflow_has_no_telegram_credentials_and_preserves_its_ledger():
 
 def test_telegram_schedule_inputs_secrets_and_state_boundary_are_pinned():
     source = workflow("telegram.yml")
-    assert 'cron: "0-45/15 9-11 * * *"' in source
-    assert 'cron: "0 12 * * *"' in source
+    assert 'cron: "0-45/15 2-4 * * *"' in source
+    assert 'cron: "0 5 * * *"' in source
     assert source.count("cron:") == 2
-    assert source.count('timezone: "Asia/Ho_Chi_Minh"') == 2
+    assert "timezone:" not in source
     assert "options: [daily, manual]" in source
     assert "options: [data-failure" not in source
     assert 'python-version: "3.12"' in source

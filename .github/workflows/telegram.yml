@@ -2,10 +2,10 @@ name: Telegram notification
 
 on:
   schedule:
-    - cron: "0-45/15 9-11 * * *"
-      timezone: "Asia/Ho_Chi_Minh"
-    - cron: "0 12 * * *"
-      timezone: "Asia/Ho_Chi_Minh"
+    # 09:00-11:45 Asia/Ho_Chi_Minh (UTC+7).
+    - cron: "0-45/15 2-4 * * *"
+    # Final 12:00 catch-up in Asia/Ho_Chi_Minh (UTC+7).
+    - cron: "0 5 * * *"
   workflow_run:
     workflows: ["Data sync and Pages deploy"]
     types: [completed]
