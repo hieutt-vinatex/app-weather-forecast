@@ -1,6 +1,7 @@
 # Thiết kế sửa lịch GitHub Actions sang UTC tường minh
 
-**Ngày:** 2026-11-04  
+**Ngày:** 2026-11-04
+
 **Trạng thái:** Người dùng đã chọn phương án UTC và yêu cầu triển khai Native
 
 ## Ý định
@@ -64,4 +65,3 @@ cố định.
 - Documentation tests pin cả giờ nghiệp vụ và giải thích UTC.
 - Chạy toàn bộ pytest, frontend test/lint/build và actionlint.
 - Push `develop`, chờ CI và Pages deploy xanh; quan sát chu kỳ production kế tiếp.
-

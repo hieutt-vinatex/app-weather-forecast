@@ -145,4 +145,3 @@ Fix Critical/Important findings via RED→GREEN before continuing.
 
 Push without force. Confirm remote SHA equality, CI success and Pages success.
 Leave the real 18:45 → 09:00 observation pending until those times occur.
-
