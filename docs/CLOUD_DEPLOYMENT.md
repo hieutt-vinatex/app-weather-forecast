@@ -85,12 +85,15 @@ Hai liên kết tương tự có sẵn trên dashboard; chúng chỉ mở giao d
 
 ## Lịch tự động và độ trễ
 
-Tất cả lịch dùng `Asia/Ho_Chi_Minh`:
+Giờ nghiệp vụ và runtime guard dùng `Asia/Ho_Chi_Minh`. Cron trong source được khai báo theo UTC
+để tránh scheduler áp dụng sai trường timezone; Việt Nam cố định UTC+7 và không
+có DST:
 
-- Dữ liệu: lượt chính lúc 18:45. Nếu chưa thành công, workflow chạy lại mỗi giờ
-  đến 23:45 (19:45–23:45); sau khi thành công, các lượt sau tự no-op.
-- Telegram: lượt chính lúc 09:00; các lượt catch-up mỗi 15 phút trong
-  09:00–12:00 chỉ gửi cho target chưa nhận, rồi dừng nhờ ledger.
+- Dữ liệu: `45 11 * * *`, tức **18:45 Việt Nam = 11:45 UTC**.
+- Retry dữ liệu: `45 12-16 * * *`, tức mỗi giờ 19:45–23:45 Việt Nam; sau khi
+  thành công, các lượt sau tự no-op.
+- Telegram: `0-45/15 2-4 * * *` cho 09:00–11:45 Việt Nam và `0 5 * * *` cho
+  lượt catch-up 12:00. Nói cách khác, **09:00 Việt Nam = 02:00 UTC**.
 
 Lịch hosted runner có thể bị trễ khi hệ thống đông. GitHub không đảm bảo bắt đầu chính xác
 tại phút đã cấu hình. Runtime guard vẫn gắn lượt dữ liệu với đúng ngày nghiệp vụ;

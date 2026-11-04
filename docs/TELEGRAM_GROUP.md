@@ -64,6 +64,14 @@ Actions có thể bị trễ và không đảm bảo bắt đầu chính xác. D
 Job không cần chờ dữ liệu của ngày đang quay. Sau lần gửi thành công, ledger khiến
 các lần sau cùng event trở thành no-op. Manual mode cố ý có thể gửi lặp.
 
+Cron trong source được khai báo theo UTC, còn các giờ bên trên luôn là giờ Việt
+Nam (`Asia/Ho_Chi_Minh`, UTC+7):
+
+- `0-45/15 2-4 * * *`: 09:00–11:45 Việt Nam.
+- `0 5 * * *`: lượt catch-up cuối lúc 12:00 Việt Nam.
+
+Vì vậy **09:00 Việt Nam = 02:00 UTC**; không thêm trường `timezone` vào schedule.
+
 Nếu lượt dữ liệu 18:45 thất bại, bot gửi cảnh báo đầu tiên và hệ thống thử lại mỗi
 giờ đến 23:45. Nếu cả tối chưa phục hồi, báo cáo sáng vẫn dựa trên snapshot cũ,
 ghi rõ **DỮ LIỆU CŨ**, ngày kỳ dữ liệu và lỗi cập nhật.

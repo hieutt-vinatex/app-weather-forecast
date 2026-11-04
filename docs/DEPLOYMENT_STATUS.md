@@ -1,6 +1,6 @@
 # Trạng thái triển khai GitHub-only
 
-Cập nhật lần cuối: **2026-11-03** (`Asia/Ho_Chi_Minh`).
+Cập nhật lần cuối: **2026-11-04** (`Asia/Ho_Chi_Minh`).
 
 ## Production hiện tại
 
@@ -49,6 +49,25 @@ Native mới.
   target và vẫn gửi xác nhận khi không có số đạt ngưỡng.
 - Nếu tối không cập nhật được, báo cáo sáng dùng snapshot cũ và ghi rõ dữ liệu cũ.
 - Workflow dùng chung mutex, không force-push và chỉ ghi đúng phạm vi dữ liệu/state.
+
+## Sự cố lịch ngày 04/11/2026
+
+Không có run Telegram trong cửa sổ 09:00–12:00 sáng 04/11 nên group không nhận
+báo cáo. Hai run Telegram schedule gần nhất thực tế chạy lúc 19:12 và 19:41 ngày
+03/11; hai data schedule chạy lúc 01:38 và 02:48 ngày 04/11. Runtime guard từ
+chối các mốc sai này an toàn, vì vậy workflow hiển thị thành công nhưng không gửi
+tin và không tạo `state/daily-data-update.json`.
+
+Bằng chứng production:
+
+- [Telegram schedule lúc 19:12](https://github.com/hieutt-vinatex/app-weather-forecast/actions/runs/41633698538).
+- [Telegram schedule lúc 19:41](https://github.com/hieutt-vinatex/app-weather-forecast/actions/runs/41637821363).
+- [Data schedule lúc 01:38](https://github.com/hieutt-vinatex/app-weather-forecast/actions/runs/41695802353).
+- [Data schedule lúc 02:48](https://github.com/hieutt-vinatex/app-weather-forecast/actions/runs/41706743588).
+
+Bản sửa bỏ trường timezone và lưu cron UTC tường minh: data `45 11 * * *` cùng
+`45 12-16 * * *`; Telegram `0-45/15 2-4 * * *` cùng `0 5 * * *`. Runtime và
+ngày nghiệp vụ vẫn dùng giờ Việt Nam. Trạng thái hiện tại: **chưa quan sát chu kỳ thực tế sau bản sửa UTC**.
 
 Kiểm thử local đã qua toàn bộ backend và `actionlint`. Trạng thái này chỉ xác nhận
 mã và cấu hình workflow; **Chưa xác nhận production cho lịch Native mới** cho đến

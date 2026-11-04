@@ -77,6 +77,9 @@ def test_schedules_freshness_telegram_and_operational_caveats_are_documented():
     assert "DỮ LIỆU CŨ" in docs
     assert "Không có số nào đạt ngưỡng" in docs
     assert "không đảm bảo bắt đầu chính xác" in docs
+    assert "Cron trong source được khai báo theo UTC" in docs
+    assert "18:45 Việt Nam = 11:45 UTC" in docs
+    assert "09:00 Việt Nam = 02:00 UTC" in docs
 
 
 def test_daily_state_retry_and_rollout_observation_are_documented_safely():
@@ -94,6 +97,21 @@ def test_daily_state_retry_and_rollout_observation_are_documented_safely():
     assert "Chưa xác nhận production cho lịch Native mới" in status
     assert "[ ] Lượt dữ liệu 18:45" in status
     assert "[ ] Báo cáo Telegram 09:00" in status
+
+
+def test_utc_schedule_incident_remains_pending_until_a_real_cycle_is_observed():
+    runbook = text("docs/CLOUD_DEPLOYMENT.md")
+    telegram = text("docs/TELEGRAM_GROUP.md")
+    status = text("docs/DEPLOYMENT_STATUS.md")
+
+    assert "45 11 * * *" in runbook
+    assert "45 12-16 * * *" in runbook
+    assert "0-45/15 2-4 * * *" in telegram
+    assert "0 5 * * *" in telegram
+    assert "Sự cố lịch ngày 04/11/2026" in status
+    assert "không có run telegram trong cửa sổ 09:00–12:00" in status.lower()
+    assert "chưa quan sát chu kỳ thực tế sau bản sửa utc" in status.lower()
+    assert "Tất cả lịch dùng `Asia/Ho_Chi_Minh`" not in runbook
 
 
 def test_active_docs_drop_retired_schedule_and_bounded_threshold_claims():
