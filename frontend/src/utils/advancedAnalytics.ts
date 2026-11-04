@@ -105,7 +105,10 @@ export function buildDigitTransitionMatrix(
   for (let index = 1; index < digits.length; index += 1) {
     const fromDigit = digits[index - 1];
     const toDigit = digits[index];
-    counts[fromDigit][toDigit] += 1;
+    if (fromDigit === undefined || toDigit === undefined) continue;
+    const row = counts[fromDigit];
+    if (!row) continue;
+    row[toDigit] = (row[toDigit] ?? 0) + 1;
   }
 
   return counts.flatMap((row, fromDigit) => {
